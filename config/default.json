@@ -1,0 +1,12 @@
+{
+  "mode": "demo",
+  "camera_url": "http://127.0.0.1:8766",
+  "capture_root": "WM_fisrtFrame",
+  "output_dir": "WM_fisrtFrame",
+  "datasets": {},
+  "replay": {
+    "enabled": false,
+    "robot_ip": "192.168.1.245",
+    "max_tcp_radius_mm": 1000
+  }
+}

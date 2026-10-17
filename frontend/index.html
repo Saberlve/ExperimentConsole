@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>WM / VLA / IDM 实验控制台</title><link rel="stylesheet" href="/style.css"></head>
+<body><header><span class="eyebrow">ROBOTICS · EXPERIMENT WORKSPACE</span><h1>统一实验控制台</h1><p id="mode">正在连接服务…</p><nav aria-label="实验页面"><button data-page="wm">WM First Frame</button><button data-page="vla">VLA Test</button><button data-page="idm">IDM Test</button></nav></header>
+<main><section class="controls"><h2 id="title">WM First Frame</h2><label>任务名称 / ID<input id="task" value="scene-001" maxlength="256"></label><label>当前相机<select id="camera"></select></label><button id="refresh">刷新相机</button>
+<div id="reference-controls"><h3>参考图与数据集</h3><div id="reference-drop" class="drop-zone" role="button" tabindex="0" aria-label="拖入或选择首帧图片">拖入一张首帧照片（PNG / JPG），或点击选择</div><label>上传 PNG / JPG<input id="reference-upload" type="file" accept="image/png,image/jpeg"></label><div id="reference-selector"><label>已加载参考图<select id="references"><option value="">请选择</option></select></label></div><label>上传一段 Episode 视频，自动提取首帧<input id="episode-video" type="file" accept="video/mp4,video/quicktime,video/x-msvideo,video/x-matroska,.mp4,.mov,.avi,.mkv"></label><p id="video-status">支持 MP4 / MOV / AVI / MKV，最大 256 MiB；提取的首帧用于参考图叠加。</p><div id="dataset-selector"><label>数据集<select id="dataset"><option value="">请选择</option></select></label><label>Episode<select id="episode"></select></label><label>相机视角<select id="view"></select></label><button id="load-reference">读取 Episode 首帧</button><p id="dataset-status">未选择数据集</p></div><div id="alignment" hidden><label>参考图透明度 <output id="alpha-value">50%</output><input id="alpha" type="range" min="0" max="100" value="50"></label><label class="inline"><input id="show-reference" type="checkbox" checked> 显示参考图</label><p>叠加仅用于显示；保存和推理使用原图。不同宽高比将提示，请使用同视角、同分辨率参考图。</p></div></div>
+<button id="snapshot" class="primary">拍摄并保存原图 / 重新拍摄</button><p id="capture-note"></p><button id="prepare" hidden>VLA 测试准备（不执行动作）</button></section>
+<section class="workspace">
+<div class="comparison-panels wm" id="comparison-panels">
+  <section class="comparison-tile"><h3>当前相机 · 实时原始预览</h3><div class="viewer"><img id="live" alt="实时 RGB 相机画面"></div></section>
+  <section class="comparison-tile" id="reference-preview"><h3>对齐参考图</h3><div class="viewer"><img id="reference-image" alt="选中的参考图"></div><p>上传照片、拖入首帧或从 Episode 提取，参考图固定显示。</p></section>
+</div>
+<div id="comparison-tools" hidden>
+  <section class="comparison-status"><div><strong id="comparison-result" role="status" data-state="pending">未启用验证</strong><span id="match-score">—</span></div><button id="validate">开始实时验证</button><p>通过标准：全分辨率匹配像素 ≥ 99%，RGB 各通道差值 ≤ 10/255，连续 3 个新帧。两秒无新帧自动失效。</p><p>分数衡量画面像素相似度，会受光照、遮挡和相机视角影响；不代表机器人位姿精度。</p></section>
+  <div class="comparison-panels">
+    <section class="comparison-tile"><h3>透明叠加 · 辅助人工对齐</h3><div class="viewer" id="viewer"><canvas id="overlay-live"></canvas><img id="overlay" alt="参考图叠加" hidden></div></section>
+    <section class="comparison-tile"><h3>实时差异图 · 亮色为不匹配区域</h3><canvas id="difference"></canvas></section>
+  </div>
+</div>
+<p id="dimension-warning"></p><h3>拍摄结果</h3><div id="snapshots"></div>
+<section id="action-replay-panel" class="replay-panel" hidden>
+<h2>IDM 动作 CSV · 转换与机械臂回放</h2>
+<p id="replay-enabled"></p><p>控制器：<strong id="replay-ip"></strong></p>
+<div id="action-drop" class="drop-zone" role="button" tabindex="0" aria-label="拖入动作 CSV">拖入 raw.csv / ema05.csv / gt.csv，或点击选择</div>
+<label>动作文件<input id="action-csv" type="file" accept=".csv,text/csv"></label>
+<pre id="action-summary">上传后自动提取 10 维动作，按 timestamp_s 推断频率，并进行离线校验。</pre>
+<a id="action-download" download="actions.npy" hidden>下载转换后的 NPY</a>
+<details><summary>离线检查日志</summary><pre id="action-dry-log"></pre></details>
+<label class="inline"><input id="replay-confirm" type="checkbox">我已确认：动作是基坐标系绝对 TCP（位置 m），夹爪 0 全开 / 1 全闭，现场已准备好执行。</label>
+<p>执行会先操作夹爪并移动到首个位姿，再按文件频率回放。请停止其他遥操/控制程序。点击执行后立即使能并运行，不做控制器状态或 TCP 起始位置检查。</p>
+<div class="replay-actions"><button id="replay-start" class="execute" disabled>执行真实机械臂动作</button><button id="replay-stop" class="stop" disabled>停止回放</button></div>
+<p>“停止回放”为软件停止；若界面或网络无响应，请使用机械臂实体停止装置。画面对齐评分不会自动触发动作。</p>
+<p id="replay-status" role="status">未运行</p><pre id="replay-log"></pre>
+</section>
+<section id="idm-panel" hidden><h2>IDM · Mock 输入测试</h2><p>未接入真实 IDM 模型。当前观测与目标观测必须单独指定，不自动使用对齐首帧。Mock 输出没有机器人动作语义。</p><label>当前观测 o_t（上传原图）<input id="current-upload" type="file" accept="image/png,image/jpeg"></label><img id="current-preview" class="input-preview" alt="当前观测" hidden><label>目标观测 o_t+1（上传原图）<input id="target-upload" type="file" accept="image/png,image/jpeg"></label><img id="target-preview" class="input-preview" alt="目标观测" hidden><label>机器人状态 JSON 数组<input id="state" value="[0,0,0,0,0,0,0]"></label><button id="infer">运行显式 Mock（不执行动作）</button><button id="history">刷新测试记录</button><pre id="result"></pre></section></section></main><footer><p id="message" role="status" aria-live="polite">就绪</p></footer><script type="module" src="/app.js"></script></body></html>

@@ -1,0 +1,8 @@
+.venv/
+__pycache__/
+.pytest_cache/
+output/
+*.mp4
+*.npy
+config/local.json
+WM_fisrtFrame/

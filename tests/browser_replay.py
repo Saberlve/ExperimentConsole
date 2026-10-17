@@ -1,0 +1,78 @@
+"""Real UI upload/execute/stop with explicit fake hardware; no robot connection."""
+import base64
+import io
+import os
+import tempfile
+import threading
+import time
+from http.server import ThreadingHTTPServer
+from PIL import Image
+from playwright.sync_api import sync_playwright, expect
+from backend.server import Application, ROOT, make_handler
+from tests.replay_fixtures import action_csv, FakeReplayAdapter
+
+
+def main():
+    with tempfile.TemporaryDirectory() as directory:
+        config={'mode':'legacy_http','camera_autostart':False,'output_dir':directory,
+                'datasets':{},'replay':{'enabled':True,'robot_ip':'192.168.1.245'}}
+        app=Application(config)
+        adapter=FakeReplayAdapter(ROOT,config)
+        app.replay.adapter=adapter
+        # Fake camera, real upload/prepare/dry-run/API and frontend; never use XArmAPI.
+        output=io.BytesIO();Image.new('RGB',(100,100),'navy').save(output,'PNG')
+        app.camera.cameras=lambda:[{'serial':'fixture','label':'TEST','connected':True}]
+        app.camera.frame=lambda _: (output.getvalue(),'image/png',str(time.monotonic_ns()))
+        server=ThreadingHTTPServer(('127.0.0.1',0),make_handler(app))
+        server.daemon_threads=True
+        thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+        try:
+            with sync_playwright() as playwright:
+                browser=playwright.chromium.launch(executable_path=os.environ.get('CHROME_BIN','/usr/bin/google-chrome'),headless=True)
+                page=browser.new_page(viewport={'width':1360,'height':1100})
+                errors=[];page.on('pageerror',lambda error:errors.append(str(error)))
+                page.goto(f'http://127.0.0.1:{server.server_port}/#idm')
+                expect(page.locator('#action-replay-panel')).to_be_visible()
+                expect(page.locator('#replay-start')).to_be_disabled()
+                page.locator('#action-drop').evaluate("""(element,encoded)=>{
+                    const bytes=Uint8Array.from(atob(encoded),c=>c.charCodeAt(0));
+                    const transfer=new DataTransfer();
+                    transfer.items.add(new File([bytes],'raw.csv',{type:'text/csv'}));
+                    element.dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:transfer}));
+                }""",base64.b64encode(action_csv()).decode())
+                expect(page.locator('#action-summary')).to_contain_text('15.000 Hz')
+                expect(page.locator('#action-summary')).to_contain_text('离线校验通过')
+                expect(page.locator('#action-download')).to_be_visible()
+                assert not adapter.launches
+                expect(page.locator('#replay-start')).to_be_disabled()
+                page.locator('#replay-confirm').check()
+                page.locator('#replay-start').click()
+                expect(page.locator('#replay-status')).to_have_attribute('data-state','running')
+                expect(page.locator('#replay-log')).to_contain_text('MOCK hardware')
+                expect(page.locator('#replay-start')).to_be_disabled()
+                expect(page.locator('#action-csv')).to_be_disabled()
+                assert len(adapter.launches)==1
+                page.locator('#replay-stop').click()
+                expect(page.locator('#replay-status')).to_have_attribute('data-state','stopped')
+                assert len(adapter.stops)==1
+                # Start a second explicit run and let the fake command stream complete.
+                page.locator('#replay-confirm').check()
+                page.locator('#replay-start').click()
+                expect(page.locator('#replay-status')).to_have_attribute('data-state','running')
+                assert len(adapter.launches)==2
+                adapter.launches[-1].done.set()
+                expect(page.locator('#replay-status')).to_have_attribute('data-state','completed')
+                expect(page.locator('#replay-status')).to_contain_text('未确认最终到位')
+                page.locator('#action-csv').set_input_files({'name':'bad.csv','mimeType':'text/csv','buffer':b'bad\n1\n2\n'})
+                expect(page.locator('#action-summary')).to_contain_text('转换失败')
+                expect(page.locator('#replay-start')).to_be_disabled()
+                assert not errors,errors
+                browser.close()
+                print('PASS: HTML5 CSV drop, real conversion/dry-run, summary/download, explicit execute, single-run locking, fake logs/stop/completion, invalid CSV; no robot connected or JavaScript errors')
+        finally:
+            app.replay.close();server.shutdown();server.server_close();thread.join()
+            if app.replay.thread:app.replay.thread.join(2)
+
+
+if __name__=='__main__':
+    main()
