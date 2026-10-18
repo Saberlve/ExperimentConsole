@@ -1,3 +1,4 @@
+import {VLAEvaluation} from '/evaluation.mjs';
 import {ActionReplay} from '/replay.mjs';
 import {RealtimeComparison} from '/comparison.mjs';
 const $ = id => document.getElementById(id);
@@ -101,15 +102,19 @@ export class SnapshotButton {
   }); }
 }
 async function main(){
-  const status=await api('/api/status');$('mode').textContent=`${status.mode==='demo'?'DEMO · 合成相机，无真实硬件':'真实相机 · 复用原首帧 HTTP 服务'} | 机械臂回放：${status.robot_execution?'手动执行已启用':'禁用'}`;
+  const status=await api('/api/status');$('mode').textContent=`${status.mode==='demo'?'DEMO · 合成相机，无真实硬件':(status.mode==='reference_only'?'布局记录模式 · 相机由终端评测使用':'真实相机 · 复用原首帧 HTTP 服务')} | 机械臂回放：${status.robot_execution?'手动执行已启用':'禁用'}`;
   $('capture-note').textContent=status.mode==='demo'?'当前保存的是合成图。':'旧接口固定保存双相机；选择器控制预览。真实采集时间、设备时间域及内参不可获取时标记 null。';
   const camera=new CameraViewer(status.mode),overlay=new ImageOverlay(),reference=new ReferenceImageSelector(overlay);
   new RealtimeComparison();new DatasetSelector(reference);new SnapshotButton();
   new ActionReplay(status.replay);
+  new VLAEvaluation(reference, status, message).load().catch(e=>message(e.message,true));
+  if(status.mode==='reference_only'){ $('snapshot').disabled=true; $('refresh').disabled=true; $('capture-note').textContent='上传提前拍好的布局图；本模式不打开相机，不影响终端评测。'; }
   const cameras=async()=>{const selected=$('camera').value;const data=await api('/api/cameras');$('camera').replaceChildren(...data.map(d=>{const o=new Option(`${d.label||d.name||d.serial} · ${d.serial}${d.error?' · '+d.error:''}`,d.serial);o.disabled=!d.connected||!!d.error;return o;}));if(data.some(d=>d.serial===selected))$('camera').value=selected;camera.select($('camera').value);message('相机列表已刷新');};
+  document.addEventListener('console-camera-paused',()=>camera.select(''));
+  document.addEventListener('console-camera-enabled',()=>cameras().catch(e=>message(e.message,true)));
   $('camera').onchange=()=>camera.select($('camera').value);action('refresh',cameras);
   for(const button of document.querySelectorAll('[data-page]'))button.onclick=()=>{
-    const page=button.dataset.page; $('title').textContent=button.textContent;$('alignment').hidden=page==='wm';$('overlay').hidden=page==='wm'||!$('references').value;$('reference-preview').hidden=false;$('comparison-tools').hidden=page==='wm';$('comparison-panels').classList.toggle('wm',page==='wm');$('idm-panel').hidden=page!=='idm';$('action-replay-panel').hidden=page!=='idm';$('prepare').hidden=page!=='vla';
+    const page=button.dataset.page; $('title').textContent=button.textContent;$('alignment').hidden=page==='wm';$('overlay').hidden=page==='wm'||!$('references').value;$('reference-preview').hidden=false;$('comparison-tools').hidden=page==='wm';$('comparison-panels').classList.toggle('wm',page==='wm');$('idm-panel').hidden=page!=='idm';$('action-replay-panel').hidden=page!=='idm';$('prepare').hidden=true;$('vla-evaluation').hidden=page!=='vla';
     for(const b of document.querySelectorAll('[data-page]'))b.classList.toggle('active',b===button);
     location.hash=page;
     document.dispatchEvent(new CustomEvent('page-changed'));
@@ -157,6 +162,6 @@ async function main(){
     message(service?.detail||e.message,true);
     if(service?.state==='connecting' && attempts++<20)setTimeout(connect,1500);
   }};
-  await connect();
+  if(status.mode!=='reference_only' && status.preview_enabled) await connect();
 }
 main().catch(e=>message(e.message,true));

@@ -201,3 +201,30 @@ python3 -m tests.browser_replay
 未来有真实远端后，需要用户先审阅并提交本目录，再设置真实 origin/推送；随后在主仓库登记 submodule path/url、160000 gitlink，并使用 `git submodule absorbgitdirs experiment_console` 迁移嵌套 .git 到主仓库管理位置。具体步骤应根据当时索引和远端状态选择，不能在无首个提交/真实 URL 时伪造完成。主仓库添加时必须按 gitlink 管理，避免把文件逐个加入主仓库。本任务未执行这些提交或索引操作。
 
 完整目录及文件清单见 [docs/files.md](docs/files.md)。
+
+## 多任务、多模型的布局评测
+
+`VLA Test` 新增任务布局测试集和人工结果记录。评测仍使用原终端命令，网页不启动策略、模型或机器人动作。
+
+1. 为每个任务填写任务名称、测试集名称/版本和成功标准，批量上传提前拍好的 10 张布局图，或开启相机逐张拍摄加入草稿。上传默认按文件名排序，可调整顺序。保存后图片、顺序、成功标准冻结；更改布局应创建新测试集。
+2. 选择任务和测试集，填写模型、具体 checkpoint、轮次、可选评测配置路径。不同模型复用同一个测试集，但各有独立记录。同一模型换 checkpoint 或重测也新建一轮。
+3. 点击“开启布局相机”，按当前参考图恢复物体摆放。主项目入口默认不自动打开设备，首次由用户显式开启。
+4. 点击“已摆好：释放相机并标记开始”。浏览器停止预览，服务关闭其拥有的相机进程并确认退出，随后才记录开始。此时在原终端启动本样本评测。不能释放相机时不会开始记录；外部相机进程不会被本控制台强杀，应在其所属终端关闭。
+5. 评测结束后标记成功、失败或中止，可填写备注或日志路径；点击下一张后重新开启布局相机。先结束终端评测，让它释放相机。控制台无法判断独立终端的机器人进程是否仍在运行。
+6. 刷新或重启后选择任务、轮次并点击“加载 / 刷新评测记录”继续。JSON/CSV 可导出；模型比较按任务展示，同时保留测试集 ID、checkpoint 和轮次，不混算不同布局版本。
+
+成功率 = 成功 /（成功 + 失败）。待测、进行中和中止均单独统计；没有判定样本时显示“—”。只测了一部分会明确显示进度，并不作为完整测试集结果。中止不自动算失败，重测应新建轮次。结果不可覆盖，重复请求和过期页面请求会被拒绝。
+
+默认保存到 `output_dir/vla_evaluations/`，包含不可变布局图片及 SHA-256、测试集记录、每轮样本结果与时间。页面上的“开始”是人工记录时间，不是终端进程真实启动时间。`mode=demo` 的记录明确标识 DEMO。
+
+推荐真机配置 `config/vla_evaluation.json`：相机按按钮开启/释放，CSV 机器人回放禁用。现有相机实现默认全景 serial `148522072685`、腕部 serial `242622070583`，实际设备应核对 `backend/camera_server.py` 的 `CAMERAS`。`config/reference_only.json` 用于只看图片、不使用相机的场景。
+
+在独立仓库运行：
+
+```bash
+./run.sh --config config/vla_evaluation.json --port 8088
+```
+
+新增 API：GET `/api/evaluation/catalog`、`/run?id=...`、`/export?id=...`、`/camera`；POST `/suites`、`/runs`、`/transition`、`/camera/enable`、`/camera/release`（均位于 `/api/evaluation` 下）。写请求需要当前服务的 `X-Replay-Token`，与已有回放接口使用相同同源保护。每次状态变更携带 `run_id` 和 `revision`，防止多页面覆盖。
+
+硬件无关验证：`python -m unittest tests.test_evaluation tests.test_camera_service tests.test_console -v`。真实相机释放/重连仍需在机器人现场验证。

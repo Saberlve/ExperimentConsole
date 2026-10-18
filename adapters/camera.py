@@ -23,6 +23,8 @@ class CameraAdapter:
         return urllib.request.urlopen(request, timeout=8)
 
     def cameras(self):
+        if self.config['mode'] == 'reference_only':
+            return []
         if self.config['mode'] == 'demo':
             return [{'serial': 'demo', 'label': 'DEMO 合成相机', 'width': 640,
                      'height': 480, 'connected': True, 'error': None}]

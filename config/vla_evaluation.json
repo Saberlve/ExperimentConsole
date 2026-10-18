@@ -1,0 +1,12 @@
+{
+  "mode": "legacy_http",
+  "camera_url": "http://127.0.0.1:8766",
+  "capture_root": "WM_fisrtFrame",
+  "output_dir": "output",
+  "datasets": {},
+  "camera_autostart": true,
+  "camera_preview_on_start": false,
+  "replay": {
+    "enabled": false
+  }
+}
