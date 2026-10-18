@@ -102,4 +102,64 @@ class ExperimentManagerTest(unittest.TestCase):
         result=train(cfg.datasets.vla_data)
         self.assertEqual(result, [((str(self.repo),'two','xarm7_joint_eef'),1.0)])
 
+
+    def configure_base_fixture(self, model='ACT'):
+        cfg = OmegaConf.load(self.root/'recipes/act.yaml')
+        key = 'chunk_size' if model == 'ACT' else 'action_horizon'
+        cfg.framework = {'name': model, key: 25}
+        cfg.datasets.vla_data.action_horizon = '${framework.' + key + '}'
+        cfg.datasets.vla_data.per_device_batch_size = 24 if model == 'ACT' else 12
+        cfg.trainer.gradient_accumulation_steps = 1
+        OmegaConf.save(cfg, self.root/'recipes/act.yaml')
+        recipes = OmegaConf.load(self.root/'recipes.yaml')
+        recipes.recipes.act.model = model
+        recipes.recipes.act.gpu_count = 1 if model == 'ACT' else 2
+        recipes.recipes.act.global_batch_size = 24
+        OmegaConf.save(recipes, self.root/'recipes.yaml')
+
+    def test_task_chunk_updates_model_loader_and_command(self):
+        for model in ('ACT', 'PI05'):
+            with self.subTest(model=model):
+                self.configure_base_fixture(model)
+                record, text = self.manager.compose(dict(self.request, action_horizon=15))
+                cfg = OmegaConf.create(text)
+                key = 'chunk_size' if model == 'ACT' else 'action_horizon'
+                self.assertEqual(cfg.framework[key], 15)
+                self.assertEqual(cfg.datasets.vla_data.action_horizon, 15)
+                self.assertEqual(record['global_batch_size'], 24)
+                self.assertIn('--nproc_per_node=' + ('1' if model == 'ACT' else '2'), record['command'])
+                self.assertEqual(self.manager.catalog()['recipes'][0]['action_horizon'], 25)
+                self.assertEqual(OmegaConf.load(self.root/'recipes/act.yaml').framework[key], 25)
+
+    def test_invalid_chunk_and_global_batch_rejected(self):
+        self.configure_base_fixture()
+        for value in (0, -1, True, 1.5, 10001):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self.manager.compose(dict(self.request, action_horizon=value))
+        with self.assertRaisesRegex(ValueError, 'global batch'):
+            self.manager.compose(dict(self.request, overrides='datasets:\n  vla_data:\n    per_device_batch_size: 12'))
+        with self.assertRaisesRegex(ValueError, '冲突'):
+            self.manager.compose(dict(self.request, action_horizon=15, overrides='framework:\n  chunk_size: 12'))
+        self.assertFalse((self.root/'saved').exists())
+
+    def test_advanced_chunk_updates_loader(self):
+        self.configure_base_fixture()
+        _, text = self.manager.compose(dict(self.request, overrides='framework:\n  chunk_size: 12'))
+        cfg = OmegaConf.create(text)
+        self.assertEqual(cfg.framework.chunk_size, 12)
+        self.assertEqual(cfg.datasets.vla_data.action_horizon, 12)
+
+    def test_default_root_discovers_only_cleaned_datasets(self):
+        import shutil
+        for name in ('alpha_cleaned', 'beta_cleaned', 'alpha_test'):
+            shutil.copytree(self.repo/'one', self.repo/name)
+        OmegaConf.save(OmegaConf.create({'data_root_dir': str(self.repo), 'sources': {}}), self.root/'sources.yaml')
+        self.manager._mixtures = {name: [(name, 1., 'xarm7_joint_eef')]
+                                  for name in ('alpha_cleaned', 'beta_cleaned')}
+        catalog = self.manager.catalog()
+        self.assertEqual([s['id'] for s in catalog['sources']], ['alpha_cleaned', 'beta_cleaned'])
+        self.assertTrue(all(s['compatible_recipes'] == ['act'] for s in catalog['sources']))
+        _, text = self.manager.compose(dict(self.request, data='beta_cleaned'))
+        self.assertEqual(OmegaConf.create(text).datasets.vla_data.data_mix, 'beta_cleaned')
+
 if __name__=='__main__':unittest.main()

@@ -80,3 +80,10 @@ python -m tests.browser_workbench
 ```
 
 实验配方、数据登记、已保存实验和评测结果仍存放在主仓库原位置。
+
+## 按 base 创建任务实验
+
+ACT / π0.5 配方引用主仓库的 base YAML。训练页可选择数据、训练步数和 Action chunk，
+后端同步模型与数据加载器的预测长度。ACT 默认单卡，π0.5 默认两卡；两者 global batch 均为24。
+高级参数支持验证比例及 seed；违反 base 的 global batch 约束或相互冲突的 chunk 设置会报错。
+保存的快照不受后续 base 修改影响。工作台仍只生成配置和命令，不启动训练。

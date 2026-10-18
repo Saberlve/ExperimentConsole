@@ -100,8 +100,14 @@ class WorkbenchHTTPTest(unittest.TestCase):
         html = self.get('/').decode()
         parser = IdParser(); parser.feed(html)
         self.assertEqual(len(parser.ids), len(set(parser.ids)))
-        for name in ('training-stage', 'checkpoints-stage', 'console-stage', 'tr-editor', 'vla-evaluation'):
+        for name in ('training-stage', 'checkpoints-stage', 'console-stage', 'tr-editor', 'tr-horizon', 'vla-evaluation'):
             self.assertIn(name, parser.ids)
+        # Check the page actually served, rather than only the unused HTML fragment.
+        import re
+        bindings = re.findall(r"\$\('([A-Za-z][A-Za-z0-9]*)'\)",
+                              (CONSOLE / 'frontend/training.mjs').read_text())
+        for name in bindings:
+            self.assertIn('tr-' + name, parser.ids, f'Missing training DOM binding: {name}')
         self.assertNotIn('<iframe', html)
         self.assertIn('workbench.css', html)
         self.assertIn(b'window.consoleReady=main()', self.get('/app.js'))

@@ -32,7 +32,13 @@ def inspect_source(repo, source):
     path = Path(source['location']).expanduser()
     path = (path if path.is_absolute() else repo / path).resolve()
     info = json.loads((path / 'meta/info.json').read_text())
-    modality = json.loads((path / 'meta/modality.json').read_text())
+    if (path / 'meta/modality.json').exists():
+        modality = json.loads((path / 'meta/modality.json').read_text())
+    else:
+        if str(repo) not in sys.path:
+            sys.path.insert(0, str(repo))
+        from examples.realRobots.xArm7.recording_metadata import xarm17_modality
+        modality = xarm17_modality(info)
     features = info['features']
     dim = features['action']['shape'][0]
     if features['observation.state']['shape'] != [dim]:
@@ -82,7 +88,16 @@ class Manager:
         return load_yaml(self.root / 'recipes.yaml')['recipes']
 
     def sources(self):
-        sources = load_yaml(self.root / 'sources.yaml')['sources']
+        config = load_yaml(self.root / 'sources.yaml')
+        sources = dict(config.get('sources') or {})
+        data_root = config.get('data_root_dir')
+        if data_root:
+            data_root = Path(data_root).expanduser()
+            data_root = data_root if data_root.is_absolute() else self.repo / data_root
+            for path in sorted(data_root.glob('*_cleaned')):
+                if (path / 'meta/info.json').is_file():
+                    sources.setdefault(path.name, dict(name=path.name, location=str(path.resolve()),
+                        task=path.name.removesuffix('_cleaned'), description='从默认数据根目录发现的清洗数据集'))
         extra = self.root / 'sources'
         if extra.exists():
             for p in sorted(extra.glob('*.yaml')):
@@ -98,9 +113,12 @@ class Manager:
     def catalog(self):
         recipes = []
         for key, recipe in self.recipes().items():
-            cfg = load_yaml(self.root / recipe['config'])
+            # Catalog defaults do not require task-specific checkpoint/tokenizer env vars.
+            cfg = OmegaConf.load(self.root / recipe['config'])
             recipes.append(dict(recipe, id=key, steps=cfg['trainer']['max_train_steps'],
-                                batch=cfg['datasets']['vla_data']['per_device_batch_size'], seed=cfg.get('seed')))
+                                batch=cfg['datasets']['vla_data']['per_device_batch_size'], seed=cfg.get('seed'),
+                                action_horizon=cfg['framework'].get('action_horizon', cfg['framework'].get('chunk_size')),
+                                gpu_count=recipe.get('gpu_count', 2), global_batch_size=recipe.get('global_batch_size')))
         sources = []
         for key, source in self.sources().items():
             try:
@@ -145,7 +163,9 @@ class Manager:
                     yield name, value
         for key, value in flatten(overrides):
             allowed = key == 'seed' or key.startswith('trainer.') or key in (
-                'datasets.vla_data.per_device_batch_size', 'datasets.vla_data.num_workers')
+                'datasets.vla_data.per_device_batch_size', 'datasets.vla_data.num_workers',
+                'datasets.vla_data.validation_ratio', 'datasets.vla_data.validation_seed',
+                'framework.action_horizon', 'framework.chunk_size')
             if not allowed or key in ('trainer.max_train_steps', 'trainer.is_resume', 'trainer.resume_from_checkpoint'):
                 raise ValueError(f'{key} 不允许在高级参数里覆盖')
             if OmegaConf.select(cfg, key, default='__missing__') == '__missing__':
@@ -153,6 +173,20 @@ class Manager:
             OmegaConf.update(cfg, key, value)
         from backend.checkpoints import canonical_model
         cfg.run_root_dir = str(self.repo / 'results/Checkpoints' / canonical_model(recipe['model']))
+        horizon_key = 'framework.chunk_size' if recipe['model'].upper() == 'ACT' else 'framework.action_horizon'
+        horizon = request.get('action_horizon', OmegaConf.select(cfg, horizon_key))
+        if horizon is not None:
+            if type(horizon) is not int or not 1 <= horizon <= 10000:
+                raise ValueError('Action chunk 必须是 1 到 10000 之间的整数')
+            horizon_overrides = {k: v for k, v in flatten(overrides)
+                                 if k in ('framework.action_horizon', 'framework.chunk_size')}
+            if any(k != horizon_key for k in horizon_overrides):
+                raise ValueError('请使用当前模型对应的 action chunk 参数')
+            if 'action_horizon' in request and horizon_key in horizon_overrides and horizon_overrides[horizon_key] != horizon:
+                raise ValueError('Action chunk 与高级参数冲突，请只设置一个值')
+            OmegaConf.update(cfg, horizon_key, horizon)
+            cfg.datasets.vla_data.action_horizon = '${' + horizon_key + '}'
+        gpu_count = recipe.get('gpu_count', 2)
         cfg.run_id = eid
         cfg.trainer.max_train_steps = steps
         cfg.trainer.is_resume = False
@@ -165,6 +199,12 @@ class Manager:
         batch = cfg.datasets.vla_data.per_device_batch_size
         if type(batch) is not int or batch < 1:
             raise ValueError('per_device_batch_size 必须为正整数')
+        accumulation = cfg.trainer.get('gradient_accumulation_steps', 1)
+        if type(accumulation) is not int or accumulation < 1:
+            raise ValueError('gradient_accumulation_steps 必须为正整数')
+        global_batch = batch * gpu_count * accumulation
+        if recipe.get('global_batch_size') is not None and global_batch != recipe['global_batch_size']:
+            raise ValueError(f'此 base 要求 global batch={recipe["global_batch_size"]}；当前每卡 batch × {gpu_count} 卡 × 梯度累积 = {global_batch}')
         path = Path(source['location'])
         cfg.datasets.vla_data.data_root_dir = str(path.parent)
         cfg.datasets.vla_data.data_mix = self.resolve_data_mix(source, recipe)
@@ -175,9 +215,10 @@ class Manager:
         if checkpoint and not Path(checkpoint).exists():
             warnings.append('预训练权重路径不存在；训练前需要修正')
         target = self.root / 'saved' / eid / 'config.yaml'
-        command = 'cd ' + shlex.quote(str(self.repo)) + ' && ACCELERATE_USE_DEEPSPEED=false .venv/bin/python -m torch.distributed.run --standalone --nnodes=1 --nproc_per_node=2 starVLA/training/train_starvla.py --config_yaml ' + shlex.quote(str(target))
+        command = 'cd ' + shlex.quote(str(self.repo)) + ' && ACCELERATE_USE_DEEPSPEED=false .venv/bin/python -m torch.distributed.run --standalone --nnodes=1 --nproc_per_node=' + str(gpu_count) + ' starVLA/training/train_starvla.py --config_yaml ' + shlex.quote(str(target))
         record = dict(id=eid, recipe=recipe_id, data=source_id, steps=steps, overrides=overrides_text,
                       model=recipe['model'], source=source, recipe_name=recipe['name'],
+                      action_horizon=horizon, gpu_count=gpu_count, global_batch_size=global_batch,
                       created_at=datetime.now(timezone.utc).isoformat(), config_path=str(target),
                       checkpoint_root=str(Path(cfg.run_root_dir) / eid),
                       config_sha256=hashlib.sha256(text.encode()).hexdigest(),

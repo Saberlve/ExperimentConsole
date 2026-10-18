@@ -16,7 +16,9 @@ from backend.server import Application, load_config, _make_console_handler
 
 
 def index_page():
-    return (FRONTEND / 'index.html').read_bytes()
+    template = (FRONTEND / 'index.html').read_text()
+    training = (FRONTEND / 'training.html').read_text()
+    return template.replace('<!-- TRAINING_PAGE -->', training).encode('utf-8')
 
 
 def make_workbench_handler(app, manager=None):
