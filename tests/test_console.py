@@ -49,7 +49,7 @@ class ConsoleTests(unittest.TestCase):
 
     def test_pages_preview_snapshot_timestamps(self):
         self.assertEqual(self.request('/')[0], 200)
-        self.assertIn(b'IDM Test', self.request('/')[1])
+        self.assertIn(b'data-page="idm"', self.request('/')[1])
         self.assertEqual(self.request('/app.js')[0], 200)
         self.assertEqual(self.request('/api/cameras')[1][0]['serial'], 'demo')
         self.assertEqual(self.request('/api/preview?camera=demo')[0], 200)

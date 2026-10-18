@@ -171,7 +171,7 @@ class Application:
             return [json.loads(line) for line in path.read_text().splitlines()][-100:] if path.exists() else []
 
 
-def make_handler(app):
+def _make_console_handler(app):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args):
             pass
@@ -376,33 +376,14 @@ def make_handler(app):
     return Handler
 
 
+def make_handler(app):
+    from backend.workbench import make_workbench_handler
+    return make_workbench_handler(app)
+
+
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--config', default=str(ROOT / 'config/default.json'))
-    parser.add_argument('--host', default='127.0.0.1')
-    parser.add_argument('--port', type=int, default=8088)
-    parser.add_argument('--control-config', help='Server-owned process profile JSON')
-    parser.add_argument('--output-dir', help='Override the results directory (never the source datasets)')
-    args = parser.parse_args()
-    config = load_config(args.config, args.output_dir)
-    if args.control_config:
-        config['process_control'] = json.loads(Path(args.control_config).read_text())
-    app = Application(config)
-    server = ThreadingHTTPServer((args.host, args.port), make_handler(app))
-    server.daemon_threads = True
-    print(f'Experiment Console: http://{args.host}:{args.port} ({app.config["mode"]})', flush=True)
-    if app.camera_service and app.preview_enabled:
-        app.camera_service.start()
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        server.server_close()
-        app.control.close()
-        app.replay.close()
-        if app.camera_service:
-            app.camera_service.close()
+    from backend.workbench import main as run_workbench
+    run_workbench()
 
 
 if __name__ == '__main__':

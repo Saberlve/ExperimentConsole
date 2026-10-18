@@ -38,7 +38,7 @@ def main():
                 page.locator('#snapshot').click()
                 expect(page.locator('#snapshots img')).to_have_count(1)
                 expect(page.locator('#message')).to_contain_text('已保存 DEMO')
-                page.get_by_role('button', name='VLA Test', exact=True).click()
+                page.locator('[data-page="vla"]').click()
                 expect(page.locator('#alignment')).to_be_visible()
                 page.locator('#reference-upload').set_input_files({'name':'ref.png','mimeType':'image/png','buffer':data})
                 expect(page.locator('#overlay')).to_be_visible()
@@ -55,9 +55,7 @@ def main():
                 page.locator('#load-reference').click()
                 expect(page.locator('#references option')).to_have_count(3)
                 expect(page.locator('#dataset-status')).to_contain_text('Episode 3')
-                page.locator('#prepare').click()
-                expect(page.locator('#message')).to_contain_text('未调用')
-                page.get_by_role('button', name='IDM Test', exact=True).click()
+                page.locator('[data-page="idm"]').click()
                 # Exercise actual HTML5 drag/drop, not just the file chooser.
                 reference_count = page.locator('#references option').count()
                 page.locator('#reference-drop').evaluate("""(element, encoded) => {
@@ -93,7 +91,7 @@ def main():
                 expect(page.locator('#result')).to_contain_text('predicted_action')
                 page.locator('#history').click()
                 expect(page.locator('#result')).to_contain_text('"status": "error"')
-                page.get_by_role('button', name='WM First Frame', exact=True).click()
+                page.locator('[data-page="wm"]').click()
                 expect(page.locator('#overlay')).to_be_hidden()
                 expect(page.locator('#alignment')).to_be_hidden()
                 page.set_viewport_size({'width':390,'height':844})

@@ -5,7 +5,9 @@ from pathlib import Path
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-OWNED_FILES = ('backend/server.py', 'backend/camera_server.py', 'adapters/realsense.py',
+OWNED_FILES = ('backend/workbench.py', 'backend/training.py', 'backend/checkpoints.py',
+               'frontend/workbench.mjs', 'frontend/workbench.css', 'frontend/training.mjs',
+               'backend/server.py', 'backend/camera_server.py', 'adapters/realsense.py',
                'backend/robot_replay.py', 'adapters/replay.py',
                'run.sh', 'run_camera.sh', 'frontend/index.html', 'frontend/app.js',
                'frontend/replay.mjs', 'frontend/comparison.mjs')
@@ -13,7 +15,7 @@ OWNED_FILES = ('backend/server.py', 'backend/camera_server.py', 'adapters/realse
 
 def check(hardware=False):
     results = [(path, (ROOT/path).is_file()) for path in OWNED_FILES]
-    modules = ['PIL', 'numpy', 'cv2'] + (['lerobot', 'pyrealsense2', 'xarm'] if hardware else [])
+    modules = ['PIL', 'numpy', 'cv2', 'omegaconf'] + (['lerobot', 'pyrealsense2', 'xarm'] if hardware else [])
     results += [('Python package: '+module, importlib.util.find_spec(module) is not None) for module in modules]
     return results
 

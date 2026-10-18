@@ -164,4 +164,4 @@ async function main(){
   }};
   if(status.mode!=='reference_only' && status.preview_enabled) await connect();
 }
-main().catch(e=>message(e.message,true));
+window.consoleReady=main().catch(e=>{message(e.message,true);throw e;});

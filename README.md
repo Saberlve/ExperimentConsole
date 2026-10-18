@@ -1,3 +1,17 @@
+# 统一实验工作台
+
+浅色工作台包含训练配置、检查点、真机评测、WM 首帧和 IDM 测试与回放。
+全部网页和后端实现均在本仓库。使用方式、训练集成及检查点文件要求见 [工作台说明](docs/workbench.md)。
+
+```bash
+./run.sh --config config/default.json --port 8088
+```
+
+连接 VLArmory 时，由主仓库 `tools/run_experiment_console.sh` 传入 `--main-repo-root`
+和模型进程配置。训练数据及结果保持在主仓库，程序本身无须位于它的 tools/ 下。
+
+---
+
 # WM / VLA / IDM 实验控制台
 
 一个 Web 项目、三个导航页面、同一套相机/保存/数据集服务。默认 DEMO，无相机与机器人依赖。真实模式新增 IDM CSV 手动回放；仅上传/转换不连接机械臂，点击明确的执行按钮后才运行。
@@ -194,13 +208,9 @@ python3 -m tests.browser_replay
 
 该脚本自建临时服务/输出，无需常驻应用；不会下载浏览器。可用 CHROME_BIN 指向已有 Chrome。
 
-## Git 独立管理与未来 Submodule
+## 仓库组织
 
-本目录已有自己的 .git，是**本地嵌套独立仓库，尚未正式注册 Submodule**。没有远端、提交、push、gitlink；主仓库 .gitmodules 和索引没有更改。原有 xArm 子模块修改保持原状。
-
-未来有真实远端后，需要用户先审阅并提交本目录，再设置真实 origin/推送；随后在主仓库登记 submodule path/url、160000 gitlink，并使用 `git submodule absorbgitdirs experiment_console` 迁移嵌套 .git 到主仓库管理位置。具体步骤应根据当时索引和远端状态选择，不能在无首个提交/真实 URL 时伪造完成。主仓库添加时必须按 gitlink 管理，避免把文件逐个加入主仓库。本任务未执行这些提交或索引操作。
-
-完整目录及文件清单见 [docs/files.md](docs/files.md)。
+本仓库独立管理网页、后端和测试；VLArmory 通过 Git 子模块引用，并由主仓库启动脚本传入本地路径和模型配置。
 
 ## 多任务、多模型的布局评测
 
