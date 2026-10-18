@@ -24,6 +24,7 @@ from adapters.video import first_frame, MAX_VIDEO_BYTES
 from backend.snapshot import SnapshotService
 from backend.replay import ReplayService
 from backend.evaluation import EvaluationService
+from backend.control import ProcessControl
 
 ROOT = Path(__file__).resolve().parents[1]
 MAX_BODY = 12 * 1024 * 1024
@@ -62,6 +63,7 @@ class Application:
         self.record_lock = threading.Lock()
         self.replay = ReplayService(config, self.output, ROOT)
         self.evaluation = EvaluationService(self)
+        self.control = ProcessControl(self)
         self.camera_lock = threading.RLock()
         self.preview_enabled = config.get('camera_preview_on_start', True) and config['mode'] != 'reference_only'
         self.camera_service = (CameraService(config, ROOT) if config['mode'] == 'legacy_http'
@@ -100,6 +102,8 @@ class Application:
 
     def enable_preview(self):
         with self.evaluation.lock:
+            if self.control.active('evaluation'):
+                raise ValueError('请先停止网页启动的评测进程，再开启相机')
             if any(r['metrics']['running'] for r in self.evaluation.catalog()['runs']):
                 raise ValueError('仍有已标记开始的样本，请先记录结果或中止，再开启布局相机')
             with self.camera_lock:
@@ -229,6 +233,8 @@ def make_handler(app):
                 self.reply(result)
             elif path == '/api/replay/status':
                 self.reply(app.replay.status())
+            elif path == '/api/evaluation/control':
+                self.reply(app.control.status())
             elif path == '/api/evaluation/camera':
                 self.reply(app.preview_status())
             elif path == '/api/evaluation/catalog':
@@ -326,7 +332,17 @@ def make_handler(app):
                 payload = json.loads(raw, parse_constant=reject_constant)
                 if not isinstance(payload, dict):
                     raise ValueError('需要 JSON 对象')
-                if path == '/api/evaluation/camera/enable':
+                if path == '/api/evaluation/control/server':
+                    self.reply(app.control.start('server', payload))
+                elif path == '/api/evaluation/control/evaluation':
+                    self.reply(app.control.start('evaluation', payload))
+                elif path == '/api/evaluation/control/stop-server':
+                    self.reply(app.control.stop_server())
+                elif path == '/api/evaluation/control/stop':
+                    self.reply(app.control.emergency_stop())
+                elif path == '/api/evaluation/control/unlock':
+                    self.reply(app.control.unlock())
+                elif path == '/api/evaluation/camera/enable':
                     self.reply(app.enable_preview())
                 elif path == '/api/evaluation/camera/release':
                     self.reply(app.release_preview())
@@ -335,6 +351,8 @@ def make_handler(app):
                 elif path == '/api/evaluation/runs':
                     self.reply(app.evaluation.create_run(payload))
                 elif path == '/api/evaluation/transition':
+                    if app.control.active('evaluation') and payload.get('action') in ('result', 'next'):
+                        raise ValueError('请先停止评测进程，再记录结果或切换布局')
                     self.reply(app.evaluation.transition(payload))
                 elif path == '/api/replay/start':
                     self.reply(app.replay.start(payload.get('job_id'), payload.get('confirmed')))
@@ -363,9 +381,13 @@ def main():
     parser.add_argument('--config', default=str(ROOT / 'config/default.json'))
     parser.add_argument('--host', default='127.0.0.1')
     parser.add_argument('--port', type=int, default=8088)
+    parser.add_argument('--control-config', help='Server-owned process profile JSON')
     parser.add_argument('--output-dir', help='Override the results directory (never the source datasets)')
     args = parser.parse_args()
-    app = Application(load_config(args.config, args.output_dir))
+    config = load_config(args.config, args.output_dir)
+    if args.control_config:
+        config['process_control'] = json.loads(Path(args.control_config).read_text())
+    app = Application(config)
     server = ThreadingHTTPServer((args.host, args.port), make_handler(app))
     server.daemon_threads = True
     print(f'Experiment Console: http://{args.host}:{args.port} ({app.config["mode"]})', flush=True)
@@ -377,6 +399,7 @@ def main():
         pass
     finally:
         server.server_close()
+        app.control.close()
         app.replay.close()
         if app.camera_service:
             app.camera_service.close()

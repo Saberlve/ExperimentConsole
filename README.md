@@ -228,3 +228,9 @@ python3 -m tests.browser_replay
 新增 API：GET `/api/evaluation/catalog`、`/run?id=...`、`/export?id=...`、`/camera`；POST `/suites`、`/runs`、`/transition`、`/camera/enable`、`/camera/release`（均位于 `/api/evaluation` 下）。写请求需要当前服务的 `X-Replay-Token`，与已有回放接口使用相同同源保护。每次状态变更携带 `run_id` 和 `revision`，防止多页面覆盖。
 
 硬件无关验证：`python -m unittest tests.test_evaluation tests.test_camera_service tests.test_console -v`。真实相机释放/重连仍需在机器人现场验证。
+
+## Optional model process controls
+
+Pass `--control-config /absolute/path/profiles.json` to enable server-owned argv profiles. The parent repository supplies model-specific commands; the console remains independent. HTTP requests select a configured model and existing checkpoint/YAML paths, never shell commands. Starts and stops use the existing local host/origin/token checks. Logs and the persistent software-stop latch live under the ignored output directory.
+
+The UI supports starting/stopping the owned policy server and starting a previously marked layout trial. Stop kills the owned evaluation process group and invokes the configured controller-stop command; a failed or timed-out controller check is shown as unconfirmed. This is a software stop, not a replacement for the physical emergency switch. Explicit unlock only clears the launch latch and does not move the arm. Record the result after stopping, then reopen the layout camera. No automatic retry or restart.
