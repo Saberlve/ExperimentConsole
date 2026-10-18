@@ -1,5 +1,5 @@
 <section id="checkpoints-stage" class="wide-page" hidden>
 <div class="page-intro"><div><span class="eyebrow">MODEL CHECKPOINTS</span><h2>模型检查点</h2><p>按模型归档完整训练目录，选择具体权重后进入真机评测。</p></div><button id="cp-refresh">刷新目录</button></div>
-<div class="panel"><p class="muted">统一保存位置</p><code id="cp-root"></code><p>每次训练使用独立目录，保留 config.yaml、dataset_statistics.json 和 checkpoints/。π05、N0、FTP1 还需可用的 PaliGemma tokenizer。</p><details><summary>目录应该怎么放？</summary><pre id="cp-example"></pre><p>复制完整的 VLArmory 训练输出目录即可。原生模型下载目录需要先转换成 VLArmory 格式。此处检查文件与元数据，模型能否加载仍以服务启动结果为准。</p></details></div>
+<div class="panel"><p class="muted">统一保存位置</p><code id="cp-root"></code><p>每次训练使用独立目录，保留 config.yaml、dataset_statistics.json 和 checkpoints/。π05、N0、FTP1 共用环境变量 PALIGEMMA_TOKENIZER_PATH 指向的一份 PaliGemma tokenizer；ACT 不使用 tokenizer。无需在每个训练目录保存副本。<br><span id="cp-tokenizer"></span></p><details><summary>目录应该怎么放？</summary><pre id="cp-example"></pre><p>复制完整的 VLArmory 训练输出目录即可。原生模型下载目录需要先转换成 VLArmory 格式。此处检查文件与元数据，模型能否加载仍以服务启动结果为准。</p></details></div>
 <div id="cp-models" class="model-cards"></div><div id="cp-records"></div>
 </section>

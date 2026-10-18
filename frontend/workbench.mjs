@@ -33,7 +33,8 @@ function useCheckpoint(path){
 }
 function renderCheckpoints(){
   $('cp-root').textContent=catalog.root;
-  $('cp-example').textContent=`${catalog.root}/\n  pi05/                 # π05\n    egg_pick_v1/        # 一次完整训练\n      config.yaml\n      dataset_statistics.json\n      paligemma_tokenizer.model\n      checkpoints/\n        steps_25000_model.safetensors\n  ACT/\n  N0/\n  FTP1/`;
+  $('cp-tokenizer').textContent=catalog.shared_tokenizer_path?'共享 tokenizer：'+catalog.shared_tokenizer_path+(catalog.shared_tokenizer_available?'':'（文件不可用）'):'尚未设置 PALIGEMMA_TOKENIZER_PATH；ACT 不需要此文件。';
+  $('cp-example').textContent=`${catalog.root}/\n  pi05/                 # π05\n    egg_pick_v1/        # 一次完整训练\n      config.yaml\n      dataset_statistics.json\n      checkpoints/\n        steps_25000_model.safetensors\n  ACT/\n  N0/\n  FTP1/`;
   $('cp-models').innerHTML=catalog.models.map(m=>`<button class="model-card ${m.id===selectedModel?'active':''}" data-model="${m.id}"><strong>${m.label}</strong><span>${m.checkpoints.length} 个权重</span><small>${esc(m.directory)}</small></button>`).join('');
   const model=catalog.models.find(m=>m.id===selectedModel);
   $('cp-records').innerHTML=`<div class="panel"><h3>${model.label} 检查点</h3>${model.checkpoints.length?`<div class="scroll"><table><thead><tr><th>训练目录 / 权重</th><th>文件检查</th><th></th></tr></thead><tbody>${model.checkpoints.map(c=>`<tr><td>${esc(c.run)}<br><small>${esc(c.name)}</small></td><td>${c.metadata_ready?'<span class="badge">元数据齐全</span>':`<span class="badge error">需补充文件</span><p>${c.issues.map(esc).join('<br>')}</p>`}</td><td><button data-checkpoint="${esc(c.path)}" ${c.metadata_ready?'':'disabled'}>用于真机评测 →</button></td></tr>`).join('')}</tbody></table></div>`:'<div class="empty">还没有检查点。将一次完整训练目录放入上方模型文件夹，再点击“刷新目录”。</div>'}</div>`;

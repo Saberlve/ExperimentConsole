@@ -1,5 +1,6 @@
 """Hardware-free integration checks for the combined workbench."""
 import json
+import os
 from pathlib import Path
 import tempfile
 import threading
@@ -17,6 +18,9 @@ from backend.workbench import (
 
 class CheckpointCatalogTest(unittest.TestCase):
     def setUp(self):
+        environment = patch.dict(os.environ, {'PALIGEMMA_TOKENIZER_PATH': ''})
+        environment.start()
+        self.addCleanup(environment.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.repo = Path(self.tmp.name)
@@ -60,6 +64,34 @@ class CheckpointCatalogTest(unittest.TestCase):
         (path.parent / 'escape.safetensors').symlink_to(external)
         entries = catalog(self.repo)['models'][1]['checkpoints']
         self.assertEqual([x['name'] for x in entries], [path.name])
+
+    def test_three_models_share_one_environment_asset_and_act_ignores_it(self):
+        shared = self.repo / 'shared/paligemma_tokenizer.model'
+        shared.parent.mkdir()
+        shared.write_bytes(b'fixture metadata only; never loaded')
+        for model in MODELS:
+            path = self.checkpoint(model)
+            (path.parent.parent / 'paligemma_tokenizer.model').unlink(missing_ok=True)
+        with patch.dict(os.environ, {'PALIGEMMA_TOKENIZER_PATH': str(shared)}):
+            data = catalog(self.repo)
+        paths = []
+        for model in data['models']:
+            entry = model['checkpoints'][0]
+            self.assertTrue(entry['metadata_ready'], entry['issues'])
+            if model['id'] == 'ACT':
+                self.assertEqual(entry['tokenizer_path'], '')
+            else:
+                paths.append(entry['tokenizer_path'])
+        self.assertEqual(paths, [str(shared)] * 3)
+        self.assertEqual(data['shared_tokenizer_path'], str(shared))
+        self.assertTrue(data['shared_tokenizer_available'])
+
+    def test_bad_shared_environment_does_not_silently_use_another_vocabulary(self):
+        n0 = self.checkpoint('N0')
+        act = self.checkpoint('ACT')
+        with patch.dict(os.environ, {'PALIGEMMA_TOKENIZER_PATH': str(self.repo / 'missing.model')}):
+            self.assertFalse(inspect_checkpoint(n0, 'N0')['metadata_ready'])
+            self.assertTrue(inspect_checkpoint(act, 'ACT')['metadata_ready'])
 
 
 

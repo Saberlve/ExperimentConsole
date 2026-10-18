@@ -1,5 +1,6 @@
 """Read checkpoint metadata without importing model or robot dependencies."""
 import json
+import os
 from pathlib import Path
 from omegaconf import OmegaConf
 from omegaconf.errors import OmegaConfBaseException
@@ -37,13 +38,20 @@ def inspect_checkpoint(checkpoint, model):
         if model != 'ACT':
             key = 'framework.tokenizer.model_path' if model == 'pi05' else 'framework.tokenizer_path'
             configured = str(OmegaConf.select(cfg, key, default='') or '')
-            local = run / 'paligemma_tokenizer.model'
-            if local.is_file():
-                tokenizer = str(local)
+            shared = os.environ.get('PALIGEMMA_TOKENIZER_PATH', '')
+            if shared:
+                candidate = Path(shared).expanduser()
+                if candidate.is_file():
+                    tokenizer = str(candidate.resolve())
+                else:
+                    issues.append('PALIGEMMA_TOKENIZER_PATH 指向的共享 tokenizer 文件不存在：' + shared)
             elif configured and Path(configured).expanduser().is_file():
                 tokenizer = str(Path(configured).expanduser().resolve())
+            elif (run / 'paligemma_tokenizer.model').is_file():
+                # Compatibility with old portable bundles; new runs use the shared env path.
+                tokenizer = str((run / 'paligemma_tokenizer.model').resolve())
             else:
-                issues.append('缺少可用的 paligemma_tokenizer.model；请放在本训练目录中')
+                issues.append('请设置 PALIGEMMA_TOKENIZER_PATH 指向共享的 paligemma_tokenizer.model；无需在每个检查点复制')
     except (OSError, ValueError, TypeError, KeyError, OmegaConfBaseException, YAMLError) as exc:
         issues.append('无法读取 config.yaml：' + str(exc))
     try:
@@ -74,4 +82,6 @@ def catalog(repo=None, *, root=None):
                 if path.suffix in ('.safetensors', '.pt') and path.is_file() and path.resolve().is_relative_to(root):
                     entries.append(inspect_checkpoint(path, model))
         models.append(dict(id=model, label=label, directory=str(directory), checkpoints=entries))
-    return dict(root=str(root), models=models)
+    shared = os.environ.get('PALIGEMMA_TOKENIZER_PATH', '')
+    return dict(root=str(root), models=models, shared_tokenizer_path=shared,
+                shared_tokenizer_available=bool(shared and Path(shared).expanduser().is_file()))

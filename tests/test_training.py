@@ -1,6 +1,8 @@
 """Hardware-free regression tests for experiment config persistence and consumers."""
 import ast
 import json
+import os
+from unittest.mock import patch
 from pathlib import Path
 import tempfile
 import unittest
@@ -32,6 +34,25 @@ class ExperimentManagerTest(unittest.TestCase):
         self.mixtures={n+'_registered':[(n,1.,'xarm7_joint_eef')] for n in ('one','two')}
         self.manager=Manager(self.repo,self.root,mixtures=self.mixtures)
         self.request=dict(id='run_a',recipe='act',data='one',steps=1000,overrides='seed: 7')
+
+    def test_generated_configs_reference_shared_tokenizer_without_copying(self):
+        shared = self.repo / 'shared/paligemma_tokenizer.model'
+        shared.parent.mkdir()
+        shared.write_bytes(b'fixture metadata only; never loaded')
+        for model in ('PI05', 'N0VTLA', 'FTP1', 'ACT'):
+            recipes = OmegaConf.load(self.root / 'recipes.yaml')
+            recipes.recipes.act.model = model
+            OmegaConf.save(recipes, self.root / 'recipes.yaml')
+            with patch.dict(os.environ, {'PALIGEMMA_TOKENIZER_PATH': str(shared)}):
+                _, text = self.manager.compose(self.request)
+            cfg = OmegaConf.create(text)
+            if model == 'ACT':
+                self.assertIsNone(OmegaConf.select(cfg, 'framework.tokenizer.model_path'))
+                self.assertIsNone(OmegaConf.select(cfg, 'framework.tokenizer_path'))
+            else:
+                key = 'framework.tokenizer.model_path' if model == 'PI05' else 'framework.tokenizer_path'
+                self.assertEqual(OmegaConf.select(cfg, key), str(shared))
+        self.assertEqual(list(self.repo.rglob('paligemma_tokenizer.model')), [shared])
 
     def test_source_switch_and_steps_reach_config(self):
         request=dict(self.request,data='two')

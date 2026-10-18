@@ -173,6 +173,12 @@ class Manager:
             OmegaConf.update(cfg, key, value)
         from backend.checkpoints import canonical_model
         cfg.run_root_dir = str(self.repo / 'results/Checkpoints' / canonical_model(recipe['model']))
+        model = canonical_model(recipe['model'])
+        shared_tokenizer = os.environ.get('PALIGEMMA_TOKENIZER_PATH', '')
+        if model != 'ACT' and shared_tokenizer:
+            tokenizer_key = 'framework.tokenizer.model_path' if model == 'pi05' else 'framework.tokenizer_path'
+            OmegaConf.update(cfg, tokenizer_key, shared_tokenizer, force_add=True)
+
         horizon_key = 'framework.chunk_size' if recipe['model'].upper() == 'ACT' else 'framework.action_horizon'
         horizon = request.get('action_horizon', OmegaConf.select(cfg, horizon_key))
         if horizon is not None:

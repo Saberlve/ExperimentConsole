@@ -26,7 +26,6 @@ results/Checkpoints/
     egg_pick_v1/
       config.yaml
       dataset_statistics.json
-      paligemma_tokenizer.model
       checkpoints/
         steps_25000_model.safetensors
         steps_30000_model.safetensors
@@ -46,10 +45,21 @@ results/Checkpoints/
 | N0 | N0VTLA | PaliGemma tokenizer；原配置键 framework.tokenizer_path |
 | FTP1 | FTP1 | PaliGemma tokenizer；训练时触觉传感器 schema 应保留在配置中，必要的外部资源也须可读 |
 
-建议将 `paligemma_tokenizer.model` 放在每次训练目录中。启动服务时，工作台优先
-使用这里的文件，仅通过启动参数覆盖 tokenizer 路径，不改动保存的训练配置。
-若原配置中的 tokenizer 路径在此服务器上仍然有效，也可以继续使用它。
-同一训练的所有 checkpoint 可以共享这份 config、统计量和 tokenizer。
+π05、N0、FTP1 共用一份 PaliGemma tokenizer；ACT 完全不使用它。
+在每台服务器的 `~/.bashrc` 中设置本机公共文件的位置：
+
+```bash
+export PALIGEMMA_TOKENIZER_PATH=/path/to/shared/paligemma_tokenizer.model
+# 兼容原有训练脚本，三个变量均指向同一实体文件。
+export FTP1_TOKENIZER="$PALIGEMMA_TOKENIZER_PATH"
+export N0VTLA_TOKENIZER="$PALIGEMMA_TOKENIZER_PATH"
+```
+
+环境变量优先于旧检查点保存的机器路径。普通训练、工作台生成的训练配置和
+网页模型服务均读取此公共路径。每个实验只保存配置、该次训练的数据统计量和权重，
+不需要复制 tokenizer，也不应从检查点重新生成词表。
+模型各自的文本长度、状态拼接等设置仍由各自训练配置决定。
+未设置环境变量时仍兼容配置里的路径和旧便携目录中的 tokenizer 副本。
 
 复制的是 VLArmory 训练输出目录时，保持上述相对层级即可。原始官方/上游模型
 下载目录（例如仅有 params/、Hugging Face config.json 或裸 model.safetensors）
