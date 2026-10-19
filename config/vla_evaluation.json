@@ -3,10 +3,14 @@
   "camera_url": "http://127.0.0.1:8766",
   "capture_root": "WM_fisrtFrame",
   "output_dir": "output",
+  "checkpoint_root": "/usr/share/EmbodiedAI/VLArmory/results/Checkpoints",
   "datasets": {},
   "camera_autostart": true,
   "camera_preview_on_start": false,
   "replay": {
     "enabled": false
-  }
+  },
+  "first_frame_roots": [
+    "/usr/share/EmbodiedAI/VLArmory/results/real_robot_eval/vla_evaluations/suites/egg_pick"
+  ]
 }

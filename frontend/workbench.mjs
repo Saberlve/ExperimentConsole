@@ -16,12 +16,16 @@ function route(){
   if(page==='checkpoints')refreshCheckpoints().catch(e=>message(e.message,true));
 }
 function checkpointOptions(){
-  const select=$('ve-checkpoint-select');if(!select||!catalog)return;
+  const select=$('ve-checkpoint');if(!select||!catalog)return;
   const model=$('ve-model').value;
-  const entries=catalog.models.find(m=>m.id===model)?.checkpoints||[];
-  select.replaceChildren(new Option(entries.length?'从归档中选择，或在下方填写其他路径':'此模型目录暂无检查点，可在下方填写其他路径',''));
-  for(const item of entries){const option=new Option(`${item.run} / ${item.name}${item.metadata_ready?'':' · 元数据不完整'}`,item.path);option.disabled=!item.metadata_ready;select.add(option);}
-  select.value=$('ve-checkpoint').value;
+  const archive=catalog.models.find(m=>m.id===model);
+  const entries=archive?.checkpoints||[];
+  const previous=select.value;
+  $('ve-checkpoint-root').textContent=`默认检查点目录：${catalog.root}`;
+  select.replaceChildren(new Option(entries.length?'请选择检查点':'此模型目录暂无检查点',''));
+  for(const item of entries){const option=new Option(`${item.run} / ${item.name}${item.metadata_ready?'':' · 元数据不完整'}`,item.path);select.add(option);}
+  if(previous&&!entries.some(item=>item.path===previous))select.add(new Option(previous,previous));
+  select.value=previous;
 }
 function useCheckpoint(path){
   const item=catalog.models.flatMap(m=>m.checkpoints).find(c=>c.path===path);
@@ -51,13 +55,12 @@ $('cp-records').onclick=e=>{const button=e.target.closest('[data-checkpoint]');i
 const trainingReady=initTraining().catch(e=>message('训练配置加载失败：'+e.message,true));
 try{
   await window.consoleReady;
-  const label=document.createElement('label');label.textContent='已归档的检查点';
-  const select=document.createElement('select');select.id='ve-checkpoint-select';label.append(select);
-  $('ve-checkpoint').closest('label').before(label);
+  const select=$('ve-checkpoint');
+  $('ve-checkpoint-refresh').onclick=()=>refreshCheckpoints().catch(e=>message(e.message,true));
   select.onchange=()=>{if(select.value){$('ve-checkpoint').value=select.value;message('已选择检查点；如需更换已有评测轮次的权重，请新建轮次。');}};
   $('ve-model').addEventListener('change',checkpointOptions);
   $('ve-checkpoint').addEventListener('input',()=>{select.value=$('ve-checkpoint').value;});
-  for(const option of $('ve-model').options)if(option.value==='pi05')option.textContent='π05';
+  for(const option of $('ve-model').options)if(['pi05','π05'].includes(option.value)){option.value='pi05';option.textContent='π05';}
   document.querySelector('[data-page="vla"]').addEventListener('click',()=>{if(catalog)checkpointOptions();});
   await refreshCheckpoints();
 }catch(e){message('评测模块加载失败：'+e.message,true);}

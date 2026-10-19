@@ -5,8 +5,9 @@ from pathlib import Path
 import re
 import secrets
 import sys
+import uuid
 from http.server import ThreadingHTTPServer
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 CONSOLE = Path(__file__).resolve().parents[1]
 FRONTEND = CONSOLE / 'frontend'
@@ -47,7 +48,25 @@ def make_workbench_handler(app, manager=None):
                                                message='尚未连接训练主仓库；请通过 --main-repo-root 配置 VLArmory 路径。'))
                     return self.reply(dict(manager.catalog(), integration_available=True))
                 if path == '/api/checkpoints':
+                    checkpoint_root = app.config.get('checkpoint_root')
+                    if checkpoint_root:
+                        return self.reply(catalog(root=checkpoint_root))
                     return self.reply(catalog(manager.repo) if manager is not None else catalog(root=app.output / 'Checkpoints'))
+                if path == '/api/evaluation/config':
+                    requested = parse_qs(parsed.query).get('path', [''])[0]
+                    if not requested:
+                        raise ValueError('请先选择或填写评测 YAML 路径')
+                    file = Path(requested).expanduser().resolve()
+                    roots = [(app.output / 'eval_configs').resolve(), (app.evaluation.root / 'runs').resolve()]
+                    if manager is not None:
+                        roots.append(manager.repo.resolve())
+                    roots.extend(Path(p['eval_config']).expanduser().resolve().parent
+                                 for p in app.control.options.get('models', {}).values() if p.get('eval_config'))
+                    if file.suffix.lower() not in ('.yaml', '.yml') or not any(file.is_relative_to(root) for root in roots):
+                        raise ValueError('请选择主仓库或已配置评测目录中的 YAML 文件')
+                    if file.stat().st_size > 262144:
+                        raise ValueError('评测配置文件超过 256 KiB')
+                    return self.reply(dict(path=str(file), content=file.read_text(encoding='utf-8')))
                 match = re.fullmatch(r'/api/training/experiments/([A-Za-z0-9_-]+)/config', path)
                 if match:
                     if manager is None:
@@ -63,20 +82,43 @@ def make_workbench_handler(app, manager=None):
                 self.handle_error(exc)
 
         def do_POST(self):
-            if not urlsplit(self.path).path.startswith('/api/training/'):
+            path = urlsplit(self.path).path
+            if not path.startswith('/api/training/') and path != '/api/evaluation/config':
                 return super().do_POST()
             if not self.local_request(write=True):
                 return self.reply({'error': '请求来源或令牌无效，请刷新页面'}, 403)
             try:
-                if manager is None:
+                if manager is None and path.startswith('/api/training/'):
                     raise ValueError('尚未配置训练主仓库')
                 length = int(self.headers.get('Content-Length', '0'))
-                if not 0 < length <= 65536:
+                if not 0 < length <= (1048576 if path == '/api/evaluation/config' else 65536):
                     raise ValueError('请求大小无效')
                 request = json.loads(self.rfile.read(length))
                 if not isinstance(request, dict):
                     raise ValueError('请求必须为对象')
                 path = urlsplit(self.path).path
+                if path == '/api/evaluation/config':
+                    import yaml
+                    from backend.checkpoints import canonical_model
+                    model = canonical_model(request.get('model'))
+                    content = request.get('content')
+                    if not isinstance(content, str) or not content.strip() or len(content.encode('utf-8')) > 262144:
+                        raise ValueError('评测 YAML 内容不能为空，且不得超过 256 KiB')
+                    try:
+                        config = yaml.safe_load(content)
+                    except yaml.YAMLError as exc:
+                        raise ValueError('YAML 格式错误：' + str(exc)) from exc
+                    if not isinstance(config, dict):
+                        raise ValueError('评测 YAML 顶层必须是配置映射')
+                    folder = app.output / 'eval_configs' / model
+                    folder.mkdir(parents=True, exist_ok=True)
+                    from backend.evaluation import config_filename
+                    filename = config_filename(str(request.get('task') or 'task'), str(request.get('round') or 'round'))
+                    file = folder / (filename.removesuffix('.yaml') + '_' + uuid.uuid4().hex[:12] + '.yaml')
+                    # Each save is a new version; existing runs keep their original YAML.
+                    with file.open('x', encoding='utf-8') as stream:
+                        stream.write(content)
+                    return self.reply(dict(path=str(file.resolve()), content=content), 201)
                 if path == '/api/training/preview':
                     record, config = manager.compose(request)
                     return self.reply(dict(record=record, config=config))
@@ -108,6 +150,7 @@ def main():
         if not (main_root / 'examples/realRobots/xArm7/experiments/recipes.yaml').is_file():
             parser.error('--main-repo-root 缺少训练配方 examples/realRobots/xArm7/experiments/recipes.yaml')
         manager = Manager(main_root)
+        config['main_repo_root'] = str(main_root)
         config['camera_preview_on_start'] = False
     if args.control_config:
         config['process_control'] = json.loads(Path(args.control_config).read_text())

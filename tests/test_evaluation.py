@@ -22,6 +22,34 @@ class EvaluationTests(unittest.TestCase):
     def run_record(self,model='ACT',suite=None):
         return self.service.create_run(dict(suite_id=(suite or self.suite)['id'],model=model,checkpoint='/ckpt/'+model,round='round-1'))
 
+    def test_each_round_snapshots_edited_yaml_in_its_results_folder(self):
+        import hashlib
+        source = self.app.output / 'eval_configs/original.yaml'
+        source.parent.mkdir()
+        source.write_text('# original\nfps: 15\n')
+        content = '# edited for this round\nfps: 10\n'
+        payload = dict(suite_id=self.suite['id'], model='ACT', checkpoint='fixture', round='round-1',
+                       eval_config=str(source), eval_config_content=content)
+        first = self.service.create_run(payload)
+        file = Path(first['eval_config'])
+        self.assertEqual(file.parent, self.service.root / 'runs' / first['id'])
+        self.assertEqual(file.name, 'egg_pick_round-1_eval.yaml')
+        self.assertEqual(file.read_text(), content)
+        self.assertEqual(first['eval_config_source'], str(source))
+        self.assertEqual(first['eval_config_sha256'], hashlib.sha256(content.encode()).hexdigest())
+        self.assertEqual(source.read_text(), '# original\nfps: 15\n')
+        second = self.service.create_run(dict(payload, round='round-2', eval_config_content='fps: 5\n'))
+        self.assertNotEqual(first['eval_config'], second['eval_config'])
+        self.assertEqual(file.read_text(), content)
+        fallback = dict(payload)
+        del fallback['eval_config_content']
+        third = self.service.create_run(fallback)
+        self.assertEqual(Path(third['eval_config']).read_text(), source.read_text())
+        count = len(self.service.catalog()['runs'])
+        with self.assertRaisesRegex(ValueError, 'YAML 格式错误'):
+            self.service.create_run(dict(payload, eval_config_content='fps: [broken'))
+        self.assertEqual(len(self.service.catalog()['runs']), count)
+
     def transition(self,run,action,**kwargs):
         return self.service.transition(dict(run_id=run['id'],revision=run['revision'],action=action,**kwargs))
 
@@ -107,6 +135,36 @@ class EvaluationTests(unittest.TestCase):
         self.assertIsNone(self.app.camera_service)
         self.assertFalse(self.app.replay.enabled)
 
+
+    def test_named_suite_target_count_and_supplement(self):
+        import io
+        from PIL import Image
+        image = io.BytesIO()
+        Image.new('RGB', (16, 12), 'green').save(image, format='PNG')
+        url = self.app.upload(image.getvalue())['url']
+        payload = dict(task='egg_pick', name='egg_new', directory_name='egg_new',
+                       layouts=[dict(url=url, label='布局 1')])
+        suite = self.app.evaluation.create_suite(payload)
+        self.assertEqual(suite['id'], 'egg_new')
+        self.assertEqual(suite['target_count'], 15)
+        self.assertEqual(suite['criteria'], '')
+        self.assertTrue((self.app.output / 'vla_evaluations/suites/egg_new/record.json').is_file())
+        with self.assertRaisesRegex(ValueError, '同名'):
+            self.app.evaluation.create_suite(payload)
+        with self.assertRaises(ValueError):
+            self.app.evaluation.create_suite(dict(payload, directory_name='../escape'))
+        update = dict(payload, suite_id=suite['id'], revision=0, target_count=2,
+                      layouts=suite['layouts'] + [dict(url=url, label='布局 2')])
+        result = self.app.evaluation.update_suite(update)
+        self.assertEqual(len(result['layouts']), 2)
+        self.assertEqual(result['target_count'], 2)
+        for item in result['layouts']:
+            self.assertTrue(self.app.asset(item['url']).is_file())
+        with self.assertRaisesRegex(ValueError, '已更新'):
+            self.app.evaluation.update_suite(update)
+        self.app.evaluation.create_run(dict(suite_id=suite['id'], model='ACT', checkpoint='fixture', round='r1'))
+        with self.assertRaisesRegex(ValueError, '已有评测轮次'):
+            self.app.evaluation.update_suite(dict(update, revision=1))
 
 class EvaluationHTTPTests(unittest.TestCase):
     setUp = console.ConsoleTests.setUp

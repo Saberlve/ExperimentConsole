@@ -2,9 +2,9 @@ import {VLAEvaluation} from '/evaluation.mjs';
 import {ActionReplay} from '/replay.mjs';
 import {RealtimeComparison} from '/comparison.mjs';
 const $ = id => document.getElementById(id);
-export async function api(path, body) {
+export async function api(path, body, headers={}) {
   const response = await fetch(path, body === undefined ? {cache:'no-store'} : {
-    method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+    method:'POST', headers:{'Content-Type':'application/json',...headers}, body:JSON.stringify(body)});
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || response.statusText);
   return data;
@@ -17,39 +17,52 @@ function action(id, fn) { $(id).addEventListener('click', async () => {
 }); }
 export function overlayOpacity(alpha, visible) { return visible ? Math.min(100,Math.max(0,Number(alpha)))/100 : 0; }
 export class CameraViewer {
-  constructor(mode) { this.mode=mode; this.timer=null; this.generation=0; this.url=null; this.controller=null; }
+  constructor(mode) { this.mode=mode; this.timer=null; this.generation=0; this.url=null; this.controller=null; this.bitmap=null; }
   select(camera) {
     const generation=++this.generation;
     clearTimeout(this.timer); this.controller?.abort();
     $('live').removeAttribute('src');
     if(this.url){URL.revokeObjectURL(this.url);this.url=null;}
     document.dispatchEvent(new CustomEvent('live-reset'));
+    this.bitmap?.close();this.bitmap=null;
     if (!camera) return;
     const update=async()=>{
-      let url=null;
+      const started=performance.now();
+      let url=null,bitmap=null,requestTimer=null,failed=false;
       try {
-        this.controller=new AbortController();
+        const controller=new AbortController();
+        this.controller=controller;
+        requestTimer=setTimeout(()=>controller.abort(),2000);
         const response=await fetch('/api/frame?camera='+encodeURIComponent(camera),
-          {cache:'no-store',signal:this.controller.signal});
+          {cache:'no-store',signal:controller.signal});
         if(!response.ok){const error=await response.json();throw new Error(error.error);}
         const frameId=response.headers.get('X-Frame-Id');
         if(!frameId)throw new Error('相机未提供帧序号，无法实时验证');
         const blob=await response.blob();
         if(generation!==this.generation)return;
+        bitmap=await createImageBitmap(blob);
+        if(generation!==this.generation){bitmap.close();return;}
         url=URL.createObjectURL(blob);
         $('live').src=url;
         await $('live').decode();
-        if(generation!==this.generation){URL.revokeObjectURL(url);return;}
+        if(generation!==this.generation){URL.revokeObjectURL(url);bitmap.close();return;}
         const old=this.url;this.url=url;if(old)URL.revokeObjectURL(old);
+        const oldBitmap=this.bitmap;this.bitmap=bitmap;
         document.dispatchEvent(new CustomEvent('live-frame',{detail:{
-          cameraId:camera,frameId,receivedAt:performance.now()}}));
+          cameraId:camera,frameId,receivedAt:performance.now(),image:bitmap}}));
+        oldBitmap?.close();
       } catch(e) {
+        failed=true;
         if(url && url!==this.url)URL.revokeObjectURL(url);
+        if(bitmap && bitmap!==this.bitmap)bitmap.close();
         if(generation!==this.generation)return;
         document.dispatchEvent(new CustomEvent('live-error',{detail:'相机画面不可用：'+e.message}));
         message('相机画面不可用：'+e.message,true);
       } finally {
-        if(generation===this.generation)this.timer=setTimeout(update,300);
+        clearTimeout(requestTimer);
+        // Budget acquisition, decoding and comparison together; never queue old frames.
+        if(generation===this.generation)this.timer=setTimeout(update,
+          failed?500:Math.max(0,1000/30-(performance.now()-started)));
       }
     };
     update();
@@ -60,15 +73,17 @@ export class ImageOverlay {
   render() {
     const alpha=overlayOpacity($('alpha').value,$('show-reference').checked);
     $('overlay').style.opacity=alpha;
+    $('overlay').hidden=true;
     $('alpha-value').value=$('alpha').value+'%';
     const a=$('live'),b=$('overlay');
     $('dimension-warning').textContent=b.naturalWidth && a.naturalWidth && Math.abs(a.naturalWidth/a.naturalHeight-b.naturalWidth/b.naturalHeight)>.01 ? '注意：参考图宽高比与相机不同，当前按相机画幅拉伸显示。' : '';
+    document.dispatchEvent(new CustomEvent('overlay-changed'));
   }
-  set(url) { document.dispatchEvent(new CustomEvent('reference-reset')); $('overlay').src=url; $('overlay').hidden=!url||location.hash==='#wm'; $('reference-image').src=url; $('reference-preview').hidden=!url; $('overlay').onload=()=>this.render(); this.render(); }
+  set(url) { document.dispatchEvent(new CustomEvent('reference-reset')); $('overlay').onload=()=>this.render();$('overlay').src=url; $('overlay').hidden=true; $('reference-image').src=url; $('reference-preview').hidden=!url; this.render(); }
 }
 export class ReferenceImageSelector {
   constructor(overlay) { this.overlay=overlay; $('references').onchange=()=>overlay.set($('references').value); }
-  add(url,label) { const option=new Option(label,url,true,true); $('references').add(option); this.overlay.set(url); }
+  add(url,label) { let option=[...$('references').options].find(o=>o.value===url);if(!option){option=new Option(label,url);$('references').add(option);}option.textContent=label;option.selected=true;this.overlay.set(url); }
   async upload(file) {
     if(!file) throw new Error('请选择图片');
     const response=await fetch('/api/upload',{method:'POST',headers:{'Content-Type':file.type},body:file});
@@ -94,7 +109,8 @@ export class DatasetSelector {
   status(){ $('dataset-status').textContent=`${$('dataset').value} · Episode ${$('episode').value} · ${$('view').value}`; }
 }
 export class SnapshotButton {
-  constructor() { action('snapshot',async()=>{
+  constructor(captureSuite) { action('snapshot',async()=>{
+    if(location.hash==='#vla'){await captureSuite();return;}
     const data=await api('/api/snapshot',{camera_id:$('camera').value,task_id:$('task').value});
     $('snapshots').replaceChildren();
     for(const frame of data.frames){ const item=document.createElement('div'),image=document.createElement('img'),link=document.createElement('a'),metadata=document.createElement('a'); image.src=frame.url;image.alt=frame.camera_id;link.href=frame.url;link.textContent='原始 PNG';link.download='';metadata.href=frame.url.replace(/\.png$/,'.json');metadata.textContent='元数据 JSON';metadata.target='_blank';item.append(image,document.createElement('br'),link,metadata);$('snapshots').append(item); }
@@ -105,21 +121,63 @@ async function main(){
   const status=await api('/api/status');$('mode').textContent=`${status.mode==='demo'?'DEMO · 合成相机，无真实硬件':(status.mode==='reference_only'?'布局记录模式 · 相机由终端评测使用':'真实相机 · 复用原首帧 HTTP 服务')} | 机械臂回放：${status.robot_execution?'手动执行已启用':'禁用'}`;
   $('capture-note').textContent=status.mode==='demo'?'当前保存的是合成图。':'旧接口固定保存双相机；选择器控制预览。真实采集时间、设备时间域及内参不可获取时标记 null。';
   const camera=new CameraViewer(status.mode),overlay=new ImageOverlay(),reference=new ReferenceImageSelector(overlay);
-  new RealtimeComparison();new DatasetSelector(reference);new SnapshotButton();
+  new RealtimeComparison();new DatasetSelector(reference);
   new ActionReplay(status.replay);
-  new VLAEvaluation(reference, status, message).load().catch(e=>message(e.message,true));
+  const evaluation=new VLAEvaluation(reference,status,message);
+  new SnapshotButton(()=>evaluation.guard(()=>evaluation.captureLayout()));
+  evaluation.load().catch(e=>message(e.message,true));
   if(status.mode==='reference_only'){ $('snapshot').disabled=true; $('refresh').disabled=true; $('capture-note').textContent='上传提前拍好的布局图；本模式不打开相机，不影响终端评测。'; }
-  const cameras=async()=>{const selected=$('camera').value;const data=await api('/api/cameras');$('camera').replaceChildren(...data.map(d=>{const o=new Option(`${d.label||d.name||d.serial} · ${d.serial}${d.error?' · '+d.error:''}`,d.serial);o.disabled=!d.connected||!!d.error;return o;}));if(data.some(d=>d.serial===selected))$('camera').value=selected;camera.select($('camera').value);message('相机列表已刷新');};
-  document.addEventListener('console-camera-paused',()=>camera.select(''));
-  document.addEventListener('console-camera-enabled',()=>cameras().catch(e=>message(e.message,true)));
-  $('camera').onchange=()=>camera.select($('camera').value);action('refresh',cameras);
+  const cameras=async(isCurrent=()=>true)=>{const selected=$('reference-image').dataset.cameraId||$('camera').value;const data=await api('/api/cameras');if(!isCurrent())return;$('camera').replaceChildren(...data.map(d=>{const o=new Option(`${d.label||d.name||d.serial} · ${d.serial}${d.error?' · '+d.error:''}`,d.serial);o.disabled=!d.connected||!!d.error;return o;}));if(data.some(d=>d.serial===selected))$('camera').value=selected;camera.select($('camera').value);message('相机列表已刷新');};
+  let connectionGeneration=0;
+  const connect=async(enable=false)=>{
+    const generation=++connectionGeneration;
+    let attempts=0;
+    const poll=async()=>{try{
+      if(generation!==connectionGeneration)return;
+      await cameras(()=>generation===connectionGeneration);
+    }catch(e){
+      if(generation!==connectionGeneration)return;
+      const current=await api('/api/status').catch(()=>({}));
+      if(generation!==connectionGeneration)return;
+      message(current.camera_service?.detail||e.message,true);
+      if(current.preview_enabled && current.camera_service?.state==='connecting' && attempts++<20)
+        setTimeout(poll,1500);
+    }};
+    try {
+      const current=await api('/api/status');
+      if(generation!==connectionGeneration)return;
+      if(!current.preview_enabled){
+        if(!enable)return;
+        await api('/api/evaluation/camera/enable',{}, {'X-Replay-Token':current.replay.token});
+      }
+      await poll();
+    }catch(e){message(e.message,true);}
+  };
+  document.addEventListener('console-camera-paused',()=>{++connectionGeneration;camera.select('');message('相机预览已关闭');});
+  document.addEventListener('console-camera-enabled',()=>connect());
+  $('camera').onchange=()=>camera.select($('camera').value);action('refresh',()=>connect(true));
+  let pageInitialized=false;
   for(const button of document.querySelectorAll('[data-page]'))button.onclick=()=>{
-    const page=button.dataset.page; $('title').textContent=button.textContent;$('alignment').hidden=page==='wm';$('overlay').hidden=page==='wm'||!$('references').value;$('reference-preview').hidden=false;$('comparison-tools').hidden=page==='wm';$('comparison-panels').classList.toggle('wm',page==='wm');$('idm-panel').hidden=page!=='idm';$('action-replay-panel').hidden=page!=='idm';$('prepare').hidden=true;$('vla-evaluation').hidden=page!=='vla';
+    const page=button.dataset.page;
+    const isVla=page==='vla';
+    $('reference-controls').hidden=isVla;
+    $('comparison-panels').hidden=isVla;
+    $('comparison-validation').hidden=isVla;
+    if(isVla){$('alpha').value=50;$('show-reference').checked=true;$('alpha').dispatchEvent(new Event('input'));}
+
+    for(const element of document.querySelectorAll('[data-reference-import]'))element.hidden=isVla;
+    $('reference-tools-title').textContent=isVla?'布局对齐':'参考图与数据集';
+    $('capture-note').hidden=isVla;$('snapshots-title').hidden=isVla;$('snapshots').hidden=isVla;
+    $('reference-preview-help').textContent=isVla?'点击测试集中的布局图片，加载为对齐参考图。':'上传照片、拖入首帧或从 Episode 提取，参考图固定显示。';
+    $('alignment-help').textContent=isVla?'调整透明度，对照参考图恢复物体布局。':'叠加仅用于显示；保存和推理使用原图。不同宽高比将提示，请使用同视角、同分辨率参考图。';
+    if(isVla)$('ve-builder-fields').insertBefore($('snapshot'),$('ve-save-suite'));else $('snapshot-home').append($('snapshot'));
+    $('vla-suite-builder').hidden=page!=='vla';$('task').closest('label').hidden=page==='vla';$('snapshot').textContent=page==='vla'?'拍摄当前视角，加入 suite':'拍摄并保存原图 / 重新拍摄'; $('title').textContent=button.textContent;$('alignment').hidden=page==='wm';$('overlay').hidden=true;$('reference-preview').hidden=false;$('comparison-tools').hidden=page==='wm';$('comparison-panels').classList.toggle('wm',page==='wm');$('idm-panel').hidden=page!=='idm';$('action-replay-panel').hidden=page!=='idm';$('prepare').hidden=true;$('vla-evaluation').hidden=page!=='vla';$('vla-results').hidden=page!=='vla';
     for(const b of document.querySelectorAll('[data-page]'))b.classList.toggle('active',b===button);
     location.hash=page;
     document.dispatchEvent(new CustomEvent('page-changed'));
+    if(pageInitialized && status.mode!=='reference_only' && (page==='wm'||(isVla&&evaluation.run?.trials[evaluation.run.cursor].status==='pending')))connect(true);
+    if(isVla&&!evaluation.run)document.dispatchEvent(new CustomEvent('console-camera-paused'));
   };
-  document.querySelector(`[data-page="${['wm','vla','idm'].includes(location.hash.slice(1))?location.hash.slice(1):'wm'}"]`).click();
   const loadPhoto=async file=>{
     try {
       if(!file || !/\.(png|jpe?g)$/i.test(file.name)) throw new Error('请选择或拖入一张 PNG/JPG 首帧照片');
@@ -155,13 +213,13 @@ async function main(){
   action('history',async()=>{$('result').textContent=JSON.stringify(await api('/api/records'),null,2);});
   action('prepare',async()=>{const data=await api('/api/vla/prepare',{task_id:$('task').value,camera_id:$('camera').value});message(data.detail);});
   const datasets=await api('/api/datasets');for(const name of datasets)$('dataset').add(new Option(name,name));
-  // Give the automatically started dual-camera service time to connect. UI stays usable.
-  let attempts=0;
-  const connect=async()=>{try{await cameras();}catch(e){
-    const service=(await api('/api/status').catch(()=>({}))).camera_service;
-    message(service?.detail||e.message,true);
-    if(service?.state==='connecting' && attempts++<20)setTimeout(connect,1500);
-  }};
-  if(status.mode!=='reference_only' && status.preview_enabled) await connect();
+  const initialHash=window.initialWorkbenchHash??location.hash;
+  const initialPage=['wm','vla','idm'].includes(initialHash.slice(1))?initialHash.slice(1):'wm';
+  document.querySelector(`[data-page="${initialPage}"]`).click();
+  pageInitialized=true;
+  if(status.mode!=='reference_only'){
+    if(initialHash==='#wm')await connect(true);
+    else if(initialPage!=='vla'&&status.preview_enabled)await connect();
+  }
 }
 window.consoleReady=main().catch(e=>{message(e.message,true);throw e;});

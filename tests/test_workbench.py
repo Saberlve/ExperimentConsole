@@ -152,6 +152,101 @@ class WorkbenchHTTPTest(unittest.TestCase):
         for path in ('/workbench.mjs', '/training.mjs', '/workbench.css', '/evaluation.mjs'):
             self.assertTrue(self.get(path))
 
+    def test_evaluation_yaml_preview_and_file_boundaries(self):
+        from urllib.parse import quote
+        file = self.repo / 'eval.yaml'
+        file.write_text('task: egg_pick\nsteps: 100\n')
+        result = json.loads(self.get('/api/evaluation/config?path=' + quote(str(file))))
+        self.assertEqual(result, dict(path=str(file), content=file.read_text()))
+        for path in (self.repo / 'secrets.json', self.repo.parent / 'outside.yaml'):
+            with self.assertRaises(HTTPError) as error:
+                self.get('/api/evaluation/config?path=' + quote(str(path)))
+            self.assertEqual(error.exception.code, 400)
+
+    def test_save_evaluation_config_versions_validation_and_auth(self):
+        from urllib.parse import quote
+        def save(content, authorized=True):
+            headers = {'Content-Type': 'application/json'}
+            if authorized:
+                headers['X-Replay-Token'] = self.app.replay.token
+            request = Request(self.base + '/api/evaluation/config',
+                              json.dumps(dict(model='ACT', content=content)).encode(), headers=headers)
+            with urlopen(request) as response:
+                return json.load(response)
+        content = '# retained comment\nfps: 15\nrobot:\n  robot_ip: 192.168.1.245\n'
+        with self.assertRaises(HTTPError) as error:
+            save(content, authorized=False)
+        self.assertEqual(error.exception.code, 403)
+        for invalid in ('fps: [broken', '- list', ''):
+            with self.assertRaises(HTTPError) as error:
+                save(invalid)
+            self.assertEqual(error.exception.code, 400)
+        first = save(content)
+        second = save('fps: 10\n')
+        self.assertNotEqual(first['path'], second['path'])
+        self.assertEqual(Path(first['path']).read_text(), content)
+        self.assertTrue(Path(first['path']).is_relative_to(self.app.output / 'eval_configs/ACT'))
+        preview = json.loads(self.get('/api/evaluation/config?path=' + quote(first['path'])))
+        self.assertEqual(preview, first)
+        self.app.control.options['models'] = {'ACT': {}}
+        self.assertIn(first['path'], self.app.control.status()['models']['ACT']['eval_configs'])
+
+    def test_saved_first_frame_sources_load_sort_and_save_suite(self):
+        from PIL import Image
+        folder = self.repo / 'first_frames'
+        folder.mkdir()
+        for name in ('10_A.png', '2_A.png', '2_W.png'):
+            Image.new('RGB', (16, 12), 'green').save(folder / name)
+        (folder / 'escape.png').symlink_to(folder / '2_A.png')
+        self.app.config['first_frame_roots'] = [str(folder)]
+        sources = json.loads(self.get('/api/evaluation/sources'))
+        source = next(s for s in sources if s['view'] == '第三人称视角（全景）')
+        self.assertEqual(source['count'], 2)
+        self.assertEqual(next(s for s in sources if s['view'] == '腕部视角')['count'], 1)
+        body = json.dumps(dict(source_id=source['id'])).encode()
+        with self.assertRaises(HTTPError) as error:
+            urlopen(Request(self.base + '/api/evaluation/sources/load', body))
+        self.assertEqual(error.exception.code, 403)
+        request = Request(self.base + '/api/evaluation/sources/load', body,
+                          headers={'X-Replay-Token': self.app.replay.token, 'Content-Type': 'application/json'})
+        with urlopen(request) as response:
+            loaded = json.load(response)
+        self.assertEqual([t['label'].split(' / ')[-1] for t in loaded['layouts']], ['2_A.png', '10_A.png'])
+        for layout in loaded['layouts']:
+            self.assertTrue(self.app.asset(layout['url']).is_file())
+        suite = self.app.evaluation.create_suite(dict(task='egg_pick', name='v1', criteria='放入蛋托', layouts=loaded['layouts']))
+        self.assertEqual(len(suite['layouts']), 2)
+        old_id = suite['id']
+        (self.app.evaluation.root / 'suites' / old_id).rename(self.app.evaluation.root / 'suites/egg_pick')
+        suite['id'] = 'egg_pick'
+        for layout in suite['layouts']:
+            layout['url'] = layout['url'].replace(old_id, 'egg_pick')
+        self.app.evaluation.write('suites', suite)
+        self.assertEqual(self.app.evaluation.read('suites', 'egg_pick')['id'], 'egg_pick')
+        self.assertEqual(self.app.evaluation.catalog()['suites'][0]['id'], 'egg_pick')
+        run = self.app.evaluation.create_run(dict(suite_id='egg_pick', model='ACT', checkpoint='fixture', round='round-1'))
+        self.assertEqual(run['suite_id'], 'egg_pick')
+        self.assertTrue(self.app.asset(run['trials'][0]['url']).is_file())
+        with self.assertRaises(ValueError):
+            self.app.evaluation.read('suites', '../outside')
+        with self.assertRaises(ValueError):
+            self.app.evaluation.load_source('../../outside')
+
+    def test_explicit_first_frame_root_excludes_capture_directory(self):
+        from PIL import Image
+        root = self.repo / 'VLA_test_fisrt'
+        folder = root / 'third_person'
+        folder.mkdir(parents=True)
+        Image.new('RGB', (16, 12), 'green').save(folder / '2.png')
+        other = self.repo / 'other_captures'
+        other.mkdir()
+        Image.new('RGB', (16, 12), 'red').save(other / '1_W.png')
+        self.app.config.update(first_frame_roots=[str(root)], capture_root=str(other))
+        sources = self.app.evaluation.source_catalog()
+        self.assertEqual(len(sources), 1)
+        self.assertEqual(sources[0]['directory'], str(folder))
+        self.assertEqual(sources[0]['view'], '第三人称视角（全景）')
+
     def test_training_write_requires_same_origin_token(self):
         def request(headers):
             return Request(self.base + '/api/training/preview', b'{}', headers={'Content-Type': 'application/json', **headers})

@@ -29,14 +29,102 @@ def identifier(value):
     return value
 
 
+def suite_identifier(value):
+    if not isinstance(value, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}', value):
+        raise ValueError('无效测试集 ID')
+    return value
+
+
+def target_count(value=15):
+    if type(value) is not int or not 1 <= value <= 100:
+        raise ValueError('目标数量必须是 1～100 的整数')
+    return value
+
+
+def optional_criteria(value=''):
+    if not isinstance(value, str) or len(value) > 2048:
+        raise ValueError('判定说明必须为文字，且不超过 2048 字符')
+    return value.strip()
+
+
+def config_filename(task, round_name):
+    def part(value):
+        return re.sub(r'[^\w-]+', '_', value).strip('_')[:64] or 'eval'
+    return f'{part(task)}_{part(round_name)}_eval.yaml'
+
+
+def validate_eval_yaml(content):
+    import yaml
+    if not isinstance(content, str) or not content.strip() or len(content.encode('utf-8')) > 262144:
+        raise ValueError('评测 YAML 内容不能为空，且不得超过 256 KiB')
+    try:
+        config = yaml.safe_load(content)
+    except yaml.YAMLError as exc:
+        raise ValueError('YAML 格式错误：' + str(exc)) from exc
+    if not isinstance(config, dict):
+        raise ValueError('评测 YAML 顶层必须是配置映射')
+    return content
+
+
 class EvaluationService:
     def __init__(self, app):
         self.app = app
         self.root = app.output / 'vla_evaluations'
         self.lock = threading.RLock()
 
+    def layout_sources(self):
+        roots = [Path(p).expanduser().resolve() for p in self.app.config.get(
+            'first_frame_roots', [str(self.app.output / 'imported_images'), self.app.config.get('capture_root', str(self.app.output / 'snapshots'))])]
+        groups = {}
+        for root in dict.fromkeys(roots):
+            if not root.is_dir():
+                continue
+            for directory, dirs, files in os.walk(root, followlinks=False):
+                folder = Path(directory)
+                dirs[:] = sorted(d for d in dirs if not (folder / d).is_symlink())
+                for name in files:
+                    path = folder / name
+                    if path.suffix.lower() not in ('.png', '.jpg', '.jpeg') or path.is_symlink() or 'overview' in path.stem.lower():
+                        continue
+                    if not path.resolve().is_relative_to(root):
+                        continue
+                    view = ''
+                    if re.search(r'_A$', path.stem, re.I) or 'third_camera' in name:
+                        view = '第三人称视角（全景）'
+                    elif re.search(r'_W$', path.stem, re.I) or 'wrist_camera' in name:
+                        view = '腕部视角'
+                    elif folder.parent.name in ('VLA_test_fisrt', 'egg_pick'):
+                        view = {'panorama': '第三人称视角（全景）', 'third_person': '第三人称视角（全景）',
+                                'third person': '第三人称视角（全景）', 'wrist': '腕部视角',
+                                'wrist_camera': '腕部视角'}.get(folder.name, '')
+                    key = hashlib.sha256((str(folder) + '|' + view).encode()).hexdigest()
+                    group = groups.setdefault(key, dict(id=key, directory=str(folder), view=view, files=[]))
+                    if str(path) not in group['files']:
+                        group['files'].append(str(path))
+        for group in groups.values():
+            group['files'].sort(key=lambda p: [int(s) if s.isdigit() else s.lower() for s in re.split(r'(\d+)', Path(p).name)])
+        return sorted(groups.values(), key=lambda g:(g['directory'], g['view']))
+
+    def source_catalog(self):
+        return [dict(id=g['id'], directory=g['directory'], view=g['view'], count=len(g['files']))
+                for g in self.layout_sources()]
+
+    def load_source(self, key):
+        group = next((g for g in self.layout_sources() if g['id'] == key), None)
+        if group is None:
+            raise ValueError('首帧目录不存在，请刷新目录列表')
+        if len(group['files']) > 100:
+            raise ValueError('此目录超过 100 张，请先拆分目录后再加载')
+        layouts = []
+        for filename in group['files']:
+            path = Path(filename)
+            url = self.app.upload(path.read_bytes())['url']
+            layouts.append(dict(url=url, label=(group['view'] + ' / ' if group['view'] else '') + path.name))
+        return dict(directory=group['directory'], view=group['view'], layouts=layouts)
+
     def read(self, kind, key):
-        return json.loads((self.root / kind / identifier(key) / 'record.json').read_text())
+        key = suite_identifier(key) if kind == 'suites' else identifier(key)
+        return json.loads((self.root / kind / key / 'record.json').read_text())
 
     def write(self, kind, record):
         folder = self.root / kind / record['id']
@@ -53,24 +141,30 @@ class EvaluationService:
 
     def catalog(self):
         with self.lock:
-            suites = [json.loads(p.read_text()) for p in sorted((self.root / 'suites').glob('*/record.json')) if re.fullmatch(r'[a-f0-9]{32}', p.parent.name)]
+            suites = [json.loads(p.read_text()) for p in sorted((self.root / 'suites').glob('*/record.json')) if re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}', p.parent.name)]
             runs = [self.summary(json.loads(p.read_text())) for p in sorted((self.root / 'runs').glob('*/record.json'))]
             return {'suites': sorted(suites, key=lambda x:x['created_at'], reverse=True),
+                    'suites_root': str((self.root / 'suites').resolve()),
                     'runs': sorted(runs, key=lambda x:x['created_at'], reverse=True)}
 
     def create_suite(self, payload):
         task = text(payload.get('task'), '任务', 256)
         name = text(payload.get('name'), '测试集名称', 256)
-        criteria = text(payload.get('criteria'), '成功判定标准', 2048)
+        criteria = optional_criteria(payload.get('criteria', ''))
         layouts = payload.get('layouts')
         if not isinstance(layouts, list) or not 1 <= len(layouts) <= 100:
-            raise ValueError('测试集需要 1～100 张布局图，建议每个任务固定 10 张')
-        key = uuid.uuid4().hex
+            raise ValueError('测试集需要 1～100 张布局图，默认目标数量为 15 张')
+        count = target_count(payload.get('target_count', 15))
+        if len(layouts) > count:
+            raise ValueError('布局图片超过目标数量，请调整目标数量或移除多余图片')
+        key = suite_identifier(payload['directory_name']) if payload.get('directory_name') else uuid.uuid4().hex
         parent = self.root / 'suites'
         parent.mkdir(parents=True, exist_ok=True)
+        if (parent / key).exists():
+            raise ValueError('同名 suite 已存在，请选择补拍或更换名称')
         stage = Path(tempfile.mkdtemp(prefix='.suite-', dir=parent))
         record = dict(id=key, task=task, name=name, criteria=criteria, created_at=utc(),
-                      capture_mode=self.app.config['mode'], layouts=[])
+                      capture_mode=self.app.config['mode'], target_count=count, revision=0, layouts=[])
         try:
             for index, item in enumerate(layouts):
                 path = self.app.asset(item['url'])
@@ -83,23 +177,95 @@ class EvaluationService:
                     url=self.app.url(parent / key / dest.name), sha256=hashlib.sha256(body).hexdigest()))
             (stage / 'record.json').write_text(json.dumps(record, ensure_ascii=False, indent=2))
             with self.lock:
+                if (parent / key).exists():
+                    raise ValueError('同名 suite 已存在，请选择补拍或更换名称')
                 os.rename(stage, parent / key)
             return record
         finally:
             if stage.exists():
                 shutil.rmtree(stage)
 
+    def update_suite(self, payload):
+        with self.lock:
+            record = self.read('suites', payload.get('suite_id'))
+            if any(r['suite_id'] == record['id'] for r in self.catalog()['runs']):
+                raise ValueError('已有评测轮次使用此 suite，请另存新 suite 后补拍，以保留原评测布局')
+            if type(payload.get('revision')) is not int or payload['revision'] != record.get('revision', 0):
+                raise ValueError('suite 已更新，请重新加载后补拍')
+            count = target_count(payload.get('target_count', 15))
+            layouts = payload.get('layouts')
+            if not isinstance(layouts, list) or not 1 <= len(layouts) <= count:
+                raise ValueError('图片数量应为 1～目标数量，请调整数量或移除多余图片')
+            # Stage all image copies before publishing an updated record.
+            folder = self.root / 'suites' / record['id']
+            old_paths = {self.app.asset(item['url']) for item in record['layouts']}
+            staged = []
+            try:
+                for i, item in enumerate(layouts):
+                    source = self.app.asset(item['url'])
+                    with Image.open(source) as image:
+                        image.verify()
+                    body = source.read_bytes()
+                    dest = folder / (uuid.uuid4().hex + '.png')
+                    dest.write_bytes(body)
+                    staged.append(dest)
+                updated = dict(record, name=text(payload.get('name'), '测试集名称', 256),
+                               task=text(payload.get('task'), '任务', 256),
+                               criteria=optional_criteria(payload.get('criteria', record.get('criteria', ''))),
+                               target_count=count, revision=record.get('revision', 0)+1,
+                               layouts=[dict(index=i, label=text(item.get('label'), '布局名称', 256),
+                                             url=self.app.url(path), sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+                                        for i,(item,path) in enumerate(zip(layouts,staged))])
+                self.write('suites', updated)
+            except Exception:
+                for path in staged:
+                    path.unlink(missing_ok=True)
+                raise
+            # Only remove old owned files after the new record is committed.
+            for path in old_paths:
+                if path.is_relative_to(folder):
+                    path.unlink(missing_ok=True)
+            return updated
+
     def create_run(self, payload):
         with self.lock:
             suite = self.read('suites', payload.get('suite_id'))
             record = dict(id=uuid.uuid4().hex, suite_id=suite['id'], task=suite['task'], suite_name=suite['name'],
-                          criteria=suite['criteria'], model=text(payload.get('model'), '模型', 256),
+                          criteria=suite.get('criteria', ''), model=text(payload.get('model'), '模型', 256),
                           checkpoint=text(payload.get('checkpoint'), 'checkpoint', 2048),
                           round=text(payload.get('round'), '轮次', 256),
                           eval_config=str(payload.get('eval_config', ''))[:2048],
                           created_at=utc(), mode=('demo' if suite['capture_mode']=='demo' or self.app.config['mode']=='demo' else self.app.config['mode']), revision=0, cursor=0,
                           trials=[dict(**layout, status='pending', started_at=None, finished_at=None, note='') for layout in suite['layouts']])
-            self.write('runs', record)
+            content = payload.get('eval_config_content')
+            source = record['eval_config']
+            if content is None and source:
+                file = Path(source).expanduser().resolve()
+                roots = [(self.app.output / 'eval_configs').resolve(), (self.root / 'runs').resolve()]
+                if self.app.config.get('main_repo_root'):
+                    roots.append(Path(self.app.config['main_repo_root']).resolve())
+                roots.extend(Path(p['eval_config']).expanduser().resolve().parent
+                             for p in self.app.control.options.get('models', {}).values() if p.get('eval_config'))
+                if file.suffix.lower() not in ('.yaml', '.yml') or not any(file.is_relative_to(root) for root in roots):
+                    raise ValueError('请选择已有评测 YAML 或提供编辑后的配置内容')
+                if file.stat().st_size > 262144:
+                    raise ValueError('评测配置文件超过 256 KiB')
+                content = file.read_text(encoding='utf-8')
+            folder = self.root / 'runs' / record['id']
+            if content is not None:
+                content = validate_eval_yaml(content)
+                folder.mkdir(parents=True, exist_ok=True)
+                dest = folder / config_filename(record['task'], record['round'])
+                with dest.open('x', encoding='utf-8') as stream:
+                    stream.write(content)
+                record.update(eval_config=str(dest.resolve()), eval_config_source=source,
+                              eval_config_sha256=hashlib.sha256(content.encode('utf-8')).hexdigest())
+            try:
+                self.write('runs', record)
+            except Exception:
+                if folder.exists():
+                    shutil.rmtree(folder)
+                raise
             return self.summary(record)
 
     def summary(self, record):
@@ -110,6 +276,27 @@ class EvaluationService:
                     aborted=statuses.count('aborted'), pending=statuses.count('pending'), running=statuses.count('running'),
                     completed=completed, success_rate=success/completed if completed else None,
                     all_scored=completed==len(statuses)))
+
+    def save_results(self, key):
+        with self.lock:
+            record = self.read('runs', key)
+            folder = self.root / 'runs' / record['id']
+            stem = config_filename(record['task'], record['round']).removesuffix('_eval.yaml')
+            paths = dict(json=str(folder / (stem + '_results.json')), csv=str(folder / (stem + '_results.csv')))
+            record.update(result_files=paths, saved_at=utc(), revision=record['revision']+1)
+            self.write('runs', record)
+            for kind, content in (('json', json.dumps(self.summary(record), ensure_ascii=False, indent=2)),
+                                  ('csv', self.export_csv(key))):
+                fd, tmp = tempfile.mkstemp(dir=folder, prefix='.results-')
+                try:
+                    with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+                        stream.write(content)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    os.replace(tmp, paths[kind])
+                finally:
+                    Path(tmp).unlink(missing_ok=True)
+            return self.summary(record)
 
     def transition(self, payload):
         with self.lock:

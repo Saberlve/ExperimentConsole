@@ -102,7 +102,7 @@ class Application:
 
     def enable_preview(self):
         with self.evaluation.lock:
-            if self.control.active('evaluation'):
+            if self.control.active('evaluation') or self.control.active('reset'):
                 raise ValueError('请先停止网页启动的评测进程，再开启相机')
             if any(r['metrics']['running'] for r in self.evaluation.catalog()['runs']):
                 raise ValueError('仍有已标记开始的样本，请先记录结果或中止，再开启布局相机')
@@ -239,6 +239,8 @@ def _make_console_handler(app):
                 self.reply(app.preview_status())
             elif path == '/api/evaluation/catalog':
                 self.reply(app.evaluation.catalog())
+            elif path == '/api/evaluation/sources':
+                self.reply(app.evaluation.source_catalog())
             elif path == '/api/evaluation/run':
                 self.reply(app.evaluation.summary(app.evaluation.read('runs', query['id'][0])))
             elif path == '/api/evaluation/export':
@@ -348,9 +350,21 @@ def _make_console_handler(app):
                     self.reply(app.release_preview())
                 elif path == '/api/evaluation/suites':
                     self.reply(app.evaluation.create_suite(payload))
+                elif path == '/api/evaluation/suites/update':
+                    self.reply(app.evaluation.update_suite(payload))
+                elif path == '/api/evaluation/sources/load':
+                    self.reply(app.evaluation.load_source(payload.get('source_id')))
                 elif path == '/api/evaluation/runs':
                     self.reply(app.evaluation.create_run(payload))
+                elif path == '/api/evaluation/start-trial':
+                    self.reply(app.control.start_trial(payload))
+                elif path == '/api/evaluation/finish-trial':
+                    self.reply(app.control.finish_trial(payload))
+                elif path == '/api/evaluation/exit-run':
+                    self.reply(app.control.finish_trial(payload, exit_run=True))
                 elif path == '/api/evaluation/transition':
+                    if app.control.active('reset'):
+                        raise ValueError('正在复位，请等待完成')
                     if app.control.active('evaluation') and payload.get('action') in ('result', 'next'):
                         raise ValueError('请先停止评测进程，再记录结果或切换布局')
                     self.reply(app.evaluation.transition(payload))

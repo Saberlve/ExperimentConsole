@@ -62,7 +62,105 @@ class ControlsTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'camera busy'): self.control.start('evaluation',self.payload)
         self.assertFalse(self.control.active('evaluation'))
 
+    def test_eval_rejects_modified_round_snapshot(self):
+        import hashlib
+        self.app.evaluation.read.return_value['eval_config_sha256'] = hashlib.sha256(self.config.read_bytes()).hexdigest()
+        self.control.start('server', self.payload)
+        self.config.write_text('modified after round was created')
+        with patch('backend.control.socket.create_connection'):
+            with self.assertRaisesRegex(ValueError, '本轮保存的配置已被修改'):
+                self.control.start('evaluation', self.payload)
+        self.assertFalse(self.control.active('evaluation'))
+
     def test_unknown_model_and_disabled_instance(self):
         with self.assertRaises(ValueError): self.control.start('server',dict(self.payload,model='shell'))
         self.control.enabled=False
         with self.assertRaises(ValueError): self.control.start('server',self.payload)
+
+
+class TrialLifecycleTest(unittest.TestCase):
+    """Exercise real record persistence with fake owned processes only."""
+    def setUp(self):
+        from backend.server import Application
+        from tests.test_console import png
+        self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
+        self.root=Path(self.tmp.name);self.events=self.root/'events'
+        def event(name):
+            with self.events.open('a') as stream:stream.write(name+'\n')
+        def command(name, sleep=False):
+            code='import time\nwith open('+repr(str(self.events))+',"a") as f: f.write('+repr(name+'\n')+')\n'
+            if sleep:code+='time.sleep(120)\n'
+            return [sys.executable,'-u','-c',code]
+        self.command=command
+        self.profile=dict(cwd=str(self.root),env={},server=command('server',True),evaluation=command('client',True),
+                          reset=command('reset'),validate=[sys.executable,'-c','pass'])
+        self.app=Application(dict(mode='legacy_http',output_dir=str(self.root),capture_root=str(self.root/'captures'),
+            camera_url='http://127.0.0.1:1',camera_autostart=False,camera_preview_on_start=False,datasets={},
+            process_control=dict(models={'ACT':self.profile},port=0,stop=command('stop'))))
+        self.control=self.app.control;self.addCleanup(self.control.close)
+        self.app.release_preview=Mock(side_effect=lambda:event('release'))
+        self.app.enable_preview=Mock(side_effect=lambda:event('camera'))
+        image=self.app.upload(png());suite=self.app.evaluation.create_suite(dict(task='egg_pick',name='layouts',
+            layouts=[dict(url=image['url'],label='one'),dict(url=image['url'],label='two')]))
+        weight=self.root/'checkpoint';weight.write_text('fixture')
+        self.run=self.app.evaluation.create_run(dict(suite_id=suite['id'],model='ACT',checkpoint=str(weight),round='r1',eval_config_content='fps: 15\n'))
+        self.control.start('server',dict(model='ACT',checkpoint=str(weight)))
+
+    def start(self):
+        with patch('backend.control.socket.create_connection'):
+            self.run=self.control.start_trial(dict(run_id=self.run['id'],revision=self.run['revision']))
+
+    def finish(self,exit_run=False):
+        return self.control.finish_trial(dict(run_id=self.run['id'],revision=self.run['revision'],result='success'),exit_run=exit_run)
+
+    def test_end_saves_resets_advances_and_connects_camera(self):
+        import json
+        self.start();self.assertTrue(self.control.active('evaluation'))
+        saved=self.finish();self.assertEqual(saved['cursor'],1)
+        self.assertEqual(saved['trials'][0]['status'],'success')
+        self.assertEqual(saved['trials'][1]['status'],'pending')
+        self.assertFalse(self.control.stopped)
+        events=self.events.read_text().splitlines()
+        for a,b in [('release','stop'),('stop','reset'),('reset','camera')]:self.assertLess(events.index(a),events.index(b))
+        self.assertEqual(json.loads(Path(saved['result_files']['json']).read_text())['metrics']['success'],1)
+        self.assertIn('success',Path(saved['result_files']['csv']).read_text())
+        for key in ('log_path','reset_log_path'):self.assertTrue(Path(saved['trials'][0][key]).is_file())
+
+    def test_reset_failure_retains_result_and_allows_retry(self):
+        self.start();self.profile['reset']=[sys.executable,'-c','raise RuntimeError("fixture reset failure")']
+        with self.assertRaisesRegex(ValueError,'复位未成功'):self.finish()
+        self.run=self.app.evaluation.read('runs',self.run['id'])
+        self.assertEqual(self.run['cursor'],0);self.assertEqual(self.run['trials'][0]['status'],'success')
+        self.assertIn('reset_error',self.run['trials'][0]);self.app.enable_preview.assert_not_called()
+        self.assertTrue(Path(self.run['result_files']['json']).is_file())
+        self.profile['reset']=self.command('reset')
+        retry=self.finish();self.assertEqual(retry['cursor'],1);self.assertNotIn('reset_error',retry['trials'][0])
+
+    def test_exit_stops_and_saves_without_reset_or_advance(self):
+        self.start();saved=self.finish(exit_run=True)
+        self.assertFalse(self.control.active('evaluation'));self.assertEqual(saved['cursor'],0)
+        self.assertNotIn('reset',self.events.read_text().splitlines());self.app.enable_preview.assert_not_called()
+        self.assertTrue(Path(saved['result_files']['json']).is_file())
+
+    def test_camera_release_failure_never_starts_client(self):
+        self.app.release_preview.side_effect=ValueError('camera still in use')
+        with self.assertRaisesRegex(ValueError,'camera still in use'):self.start()
+        self.assertFalse(self.control.active('evaluation'))
+        self.assertEqual(self.app.evaluation.read('runs',self.run['id'])['trials'][0]['status'],'pending')
+
+    def test_emergency_during_reset_prevents_next_and_camera(self):
+        self.start();self.profile['reset']=self.command('reset',True)
+        entered=threading.Event();errors=[];original=self.control._spawn
+        def spawn(*args,**kw):
+            out=original(*args,**kw)
+            if args[0]=='reset':entered.set()
+            return out
+        def end():
+            try:self.finish()
+            except Exception as exc:errors.append(exc)
+        with patch.object(self.control,'_spawn',side_effect=spawn):
+            thread=threading.Thread(target=end);thread.start()
+            self.assertTrue(entered.wait(5));self.control.emergency_stop();thread.join(5)
+        self.assertFalse(thread.is_alive());self.assertTrue(errors);self.assertTrue(self.control.stopped)
+        self.assertFalse(self.control.active('reset'));self.app.enable_preview.assert_not_called()
+        self.assertEqual(self.app.evaluation.read('runs',self.run['id'])['cursor'],0)
