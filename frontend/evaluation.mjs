@@ -29,36 +29,55 @@ export class VLAEvaluation {
 <div class="ve-workflow"><ol aria-label="评测操作顺序"><li data-eval-step="1">1 选择测试集与模型</li><li data-eval-step="2">2 启动模型服务</li><li data-eval-step="3">3 对齐布局并评测</li><li data-eval-step="4">4 保存结果，下一张</li></ol><p id="ve-next-action" role="status">继续上次评测：在下方选择任务和已有轮次，点击“继续选中的评测”。新模型或新 checkpoint 请新建轮次。</p></div>
 <p id="ve-session-status" role="status">正在连接评测会话…</p><p>每个任务保存独立布局测试集；不同模型和 checkpoint 使用同一测试集，各自新建评测轮次。可在下方启动模型服务和评测，也可沿用终端。</p>
 
-<section id="ve-resume" class="ve-step"><h3>1 · 继续已有评测</h3><p>选择上次的轮次，恢复已保存的进度、模型和配置。继续按钮不会启动机械臂。</p><div class="ve-grid"><label>任务<select id="ve-task-filter"></select></label><label>已有评测轮次<select id="ve-runs"></select></label></div><button id="ve-load" class="primary">继续选中的评测</button></section>
+<section id="ve-resume" class="ve-step"><h3>1 · 继续已有评测</h3><p>选择上次的轮次，恢复已保存的进度、模型和配置。继续按钮不会启动机械臂。</p><div class="ve-grid"><label>任务<select id="ve-task-filter"></select></label><label>已有评测轮次<select id="ve-runs"></select></label></div><button id="ve-load" class="primary">继续选中的评测</button><div id="ve-resume-config-host" hidden></div></section>
 <details id="ve-setup" class="ve-step" open><summary>或：新建评测轮次（新模型 / 新 checkpoint）</summary><p>已有测试集直接选择；首次使用可在左侧拍摄并保存布局测试集。选好模型、检查点和 YAML 后，点击“保存配置并新建评测轮次”。</p>
-<label>布局测试集<select id="ve-suite"></select></label><p id="ve-suite-info"></p><button id="ve-edit-suite">加载此 suite 补拍 / 编辑</button><details id="ve-suite-images" hidden><summary id="ve-suite-images-title">布局图片</summary><div id="ve-suite-preview"></div></details>
+<label>布局测试集<select id="ve-suite"></select></label><p id="ve-suite-info"></p><div class="ve-actions"><button id="ve-edit-suite">加载此 suite 补拍 / 编辑</button><button id="ve-delete-suite">删除此 suite</button></div><details id="ve-suite-images" hidden><summary id="ve-suite-images-title">布局图片</summary><div id="ve-suite-preview"></div></details>
 <p id="ve-checkpoint-root"></p><button id="ve-checkpoint-refresh">刷新检查点列表</button>
 <div class="ve-grid"><label>模型名称<select id="ve-model"><option value="pi05">π05</option><option value="ACT">ACT</option><option value="FTP1">FTP1</option><option value="N0">N0</option></select></label><label>检查点<select id="ve-checkpoint"><option value="">请选择检查点</option></select></label><label>轮次名称<input id="ve-round" list="ve-round-options" placeholder="输入轮次名称，例如 round-1" maxlength="256"><datalist id="ve-round-options"></datalist></label><label>评测配置<select id="ve-config"><option value="">请选择评测 YAML</option></select></label></div>
 <label>手动填写 checkpoint（终端评测 / 离线记录）<input id="ve-manual-checkpoint" placeholder="填写 checkpoint 路径或标识"></label>
-<details><summary>查看 / 修改评测 YAML（可选）</summary><p id="ve-config-path"></p><div class="ve-code-editor"><div class="ve-code-gutter" aria-hidden="true"><pre id="ve-config-lines">1</pre></div><div class="ve-code-body"><pre id="ve-config-highlight" aria-hidden="true"></pre><textarea id="ve-config-content" aria-label="评测 YAML 编辑器" spellcheck="false" autocapitalize="off" autocomplete="off" wrap="off" disabled></textarea></div></div><p id="ve-config-state">请选择评测配置。</p><p>创建轮次时，编辑内容自动保存到该轮结果目录并用于评测，原文件保持不变。</p></details>
+<details id="ve-config-editor"><summary id="ve-config-editor-title">查看 / 修改评测 YAML（可选）</summary><p id="ve-config-path"></p><div class="ve-code-editor"><div class="ve-code-gutter" aria-hidden="true"><pre id="ve-config-lines">1</pre></div><div class="ve-code-body"><pre id="ve-config-highlight" aria-hidden="true"></pre><textarea id="ve-config-content" aria-label="评测 YAML 编辑器" spellcheck="false" autocapitalize="off" autocomplete="off" wrap="off" disabled></textarea></div></div><p id="ve-config-state">请选择评测配置。</p><p>启动 / 重试本条评测时，会原地保存修改并使用更新后的配置。</p></details>
 <button id="ve-create-run" class="primary">保存配置并新建评测轮次</button>
-</details><section id="ve-process"><h3>2 · 启动模型服务</h3><p>完成第 1 步后启动服务；然后在第 3 步对齐布局并开始评测。</p><div class="ve-actions"><button id="ve-server-start">启动模型服务</button><button id="ve-server-stop">停止模型服务</button><button id="ve-emergency" style="background:#b91c1c;color:white;font-weight:bold">急停 / 停止评测</button><button id="ve-unlock">已人工检查，解除启动锁定</button></div><p>软件急停发送控制器停止指令；网络或控制器异常时请使用实体急停。解除锁定不会使机器人运动。</p><p id="ve-process-status"></p><details><summary>启动日志</summary><pre id="ve-process-log" style="white-space:pre-wrap;max-height:260px;overflow:auto"></pre></details></section><section id="ve-current" class="ve-step" hidden><h3>3 · 对齐布局，启动本条评测</h3><p id="ve-run-meta"></p><strong id="ve-progress"></strong><p id="ve-current-label"></p><img id="ve-layout" alt="当前样本的固定布局图" style="max-width:100%;max-height:420px"><p id="ve-instructions"></p><p>点击左侧“开启 / 刷新相机”，按参考图摆好物体。“启动本条评测”会自动释放预览相机。</p><div id="ve-alignment"></div><button id="ve-eval-start" class="primary">启动本条评测（自动释放相机）</button><section class="ve-trial-console"><h3>本条评测 · 状态与日志</h3><p id="ve-trial-status" role="status">尚未启动评测。</p><pre id="ve-trial-log" tabindex="0" aria-label="本条评测日志">等待启动。</pre></section><h3>4 · 结束后记录结果</h3><label>本样本备注 / 日志路径<textarea id="ve-note"></textarea></label>
+<dialog id="ve-delete-suite-dialog" aria-labelledby="ve-delete-suite-title"><h3 id="ve-delete-suite-title">确认删除 suite？</h3><p id="ve-delete-suite-description"></p><p>删除后无法恢复，该 suite 将不再可选。已有评测记录及其使用的布局图会保留，可继续历史评测。</p><div class="ve-actions"><button id="ve-delete-suite-cancel">取消</button><button id="ve-delete-suite-confirm">确认删除</button></div></dialog>
+</details><section id="ve-process"><h3>2 · 启动模型服务</h3><p>完成第 1 步后启动服务；然后在第 3 步对齐布局并开始评测。</p><div class="ve-actions"><button id="ve-server-start">启动模型服务</button><button id="ve-server-stop">停止模型服务</button><button id="ve-unlock">已人工检查，解除启动锁定</button></div><p>软件急停发送控制器停止指令；网络或控制器异常时请使用实体急停。解除锁定不会使机器人运动。</p><p id="ve-process-status"></p><details><summary>启动日志</summary><pre id="ve-process-log" style="white-space:pre-wrap;max-height:260px;overflow:auto"></pre></details></section><section id="ve-current" class="ve-step" hidden><h3>3 · 对齐布局，启动本条评测</h3><p id="ve-run-meta"></p><strong id="ve-progress"></strong><p id="ve-current-label"></p><img id="ve-layout" alt="当前样本的固定布局图" style="max-width:100%;max-height:420px"><p id="ve-instructions"></p><p>点击左侧“开启 / 刷新相机”，按参考图摆好物体。“启动本条评测”会自动释放预览相机。</p><div id="ve-alignment"></div><button id="ve-eval-start" class="primary">启动本条评测（自动释放相机）</button><section class="ve-trial-console"><h3>本条评测 · 状态与日志</h3><p id="ve-trial-status" role="status">尚未启动评测。</p><pre id="ve-trial-log" tabindex="0" aria-label="本条评测日志">等待启动。</pre></section><h3>4 · 结束后记录结果</h3><label>本样本备注 / 日志路径<textarea id="ve-note"></textarea></label>
 <label>本条结果<select id="ve-trial-result"><option value="success">成功</option><option value="failure">失败</option><option value="aborted" selected>中止</option></select></label><div class="ve-actions"><button id="ve-trial-end">结束本条（复位并下一张）</button><button id="ve-run-exit">退出并保存评测结果</button></div>
 <details id="ve-manual-controls"><summary>在终端运行 VLA / 仅手动记录结果</summary><p>先点击左侧“释放相机供 VLA 使用”，再在终端运行评测。手动标记开始 → 仅保存本条结果 → 继续下一张。手动记录不会停止或复位机械臂；请在终端完成控制操作。</p><div class="ve-actions"><button id="ve-manual-start">手动标记开始</button><button id="ve-manual-result">仅保存本条结果</button><button id="ve-next">继续下一张（不复位）</button></div></details>
+<details id="ve-result-editor" hidden><summary id="ve-result-editor-title">查看 / 修改历史结果</summary><p>选中已记录的样本修改结果和备注，保存后自动更新成功率与导出记录。</p><label>已记录的样本<select id="ve-result-trial"></select></label><img id="ve-result-layout" alt="所选历史样本的布局图" style="max-width:100%;max-height:260px"><label>修改结果<select id="ve-corrected-result"><option value="success">成功</option><option value="failure">失败</option><option value="aborted">中止</option></select></label><label>备注<textarea id="ve-corrected-note"></textarea></label><button id="ve-save-result">保存结果修改</button></details>
 <p><a id="ve-json" target="_blank">导出 JSON</a> · <a id="ve-csv">导出 CSV</a></p><div id="ve-trials"></div></section>
 `;
+    this.configEditorHome=document.createComment('new evaluation config editor');
+    $('ve-config-editor').before(this.configEditorHome);
     $('ve-suite-name').addEventListener('input',()=>this.builderProgress());
     $('ve-target-count').addEventListener('input',()=>this.builderProgress());
     this.bind('ve-new-suite',()=>{this.editingSuite=null;this.draft=[];$('ve-suite-name').value='';$('ve-target-count').value=15;this.renderDraft();});
     this.bind('ve-edit-suite',()=>this.editSuite());
+    this.bind('ve-delete-suite',()=>this.confirmDeleteSuite());
+    $('ve-delete-suite-cancel').onclick=()=>$('ve-delete-suite-dialog').close();
+    this.bind('ve-delete-suite-confirm',()=>this.deleteSuite());
     $('ve-manual-checkpoint').onchange=()=>{this.setChoice('ve-checkpoint',$('ve-manual-checkpoint').value.trim());this.roundOptions();};
     this.bind('ve-manual-start',()=>this.manualTransition('start'));
     this.bind('ve-manual-result',()=>this.manualTransition('result'));
     this.bind('ve-next',()=>this.manualTransition('next'));
+    $('ve-result-trial').onchange=()=>this.showSavedResult();
+    this.bind('ve-save-result',()=>this.saveSavedResult());
     this.cameraGeneration=0;
     const controlPayload=()=>({model:$('ve-model').value,checkpoint:$('ve-checkpoint').value,eval_config:$('ve-config').value,run_id:this.run?.id,revision:this.run?.revision});
     for(const [id,endpoint] of [['ve-server-start','server'],['ve-server-stop','stop-server'],['ve-unlock','unlock']])this.bind(id,async()=>{await this.api('/api/evaluation/control/'+endpoint,controlPayload());await this.pollControl();});
     // Emergency remains independent of the ordinary form busy guard.
     $('ve-emergency').onclick=async()=>{try{await this.api('/api/evaluation/control/stop',{});}catch(e){this.message(e.message,true);}finally{await this.pollControl();}};
+    // Modal dialogs make the rest of the document inert. Keep the same stop
+    // button inside the active dialog so it stays visible and clickable.
+    const safetyBar=$('global-safety-bar'),safetyHome=document.createComment('global safety bar');
+    safetyBar.before(safetyHome);
+    const keepEmergencyAccessible=()=>{
+      const modal=[...document.querySelectorAll('dialog[open]')].filter(dialog=>dialog.matches(':modal')).at(-1);
+      if(modal){if(safetyBar.parentElement!==modal)modal.append(safetyBar);}
+      else if(safetyBar.parentElement!==document.body)safetyHome.after(safetyBar);
+    };
+    new MutationObserver(keepEmergencyAccessible).observe(document.body,{subtree:true,attributes:true,attributeFilter:['open']});
     $('ve-model').onchange=()=>this.controlDefaults();
     $('ve-config').addEventListener('change',()=>this.previewConfig());
     $('ve-config-content').addEventListener('scroll',()=>this.syncConfigScroll());
-    $('ve-config-content').oninput=()=>{this.renderConfigCode();this.configDirty=$('ve-config-content').value!==this.configOriginal;$('ve-config-state').textContent=this.configDirty?'已修改，将随新轮次保存':'';};
+    $('ve-config-content').oninput=()=>{this.renderConfigCode();this.configDirty=$('ve-config-content').value!==this.configOriginal;$('ve-config-state').textContent=this.configDirty?'已修改，下次启动时保存到当前轮次':'';};
     window.addEventListener('beforeunload',event=>{if(this.configDirty||Object.keys(this.configDrafts||{}).length){event.preventDefault();event.returnValue='';}});
     $('ve-checkpoint').addEventListener('change',()=>this.roundOptions());
     this.pollControl().catch(e=>this.message(e.message,true));
@@ -76,11 +95,14 @@ export class VLAEvaluation {
       this.trialEvent('收到启动操作，检查当前轮次和配置。');this.renderTrialLog();this.updateTrialControls();
       const ticker=setInterval(()=>this.renderTrialLog(),1000);
       try{
-        this.requireSavedConfig();if(!this.run)throw Error('请先新建或加载评测轮次');
+        this.requireLoadedConfig();if(!this.run)throw Error('请先新建或加载评测轮次');
         ++this.cameraGeneration;document.dispatchEvent(new CustomEvent('console-camera-paused'));
         this.trialEvent('已暂停浏览器预览；向服务端请求校验配置、释放相机并启动评测客户端。');
         this.message('正在请求启动评测，请查看按钮下方的状态与日志…');
-        this.run=await this.api('/api/evaluation/start-trial',{run_id:this.run.id,revision:this.run.revision});
+        const edited=this.configDirty||($('ve-config').value&&this.configEditorPath!==this.run.eval_config);
+        this.run=await this.api('/api/evaluation/start-trial',{run_id:this.run.id,revision:this.run.revision,
+          ...(edited?{eval_config_content:$('ve-config-content').value}:{})});
+        this.configDirty=false;delete (this.configDrafts||{})[this.configEditorPath];
         this.trialEvent('服务端已接受启动，正在读取客户端状态和输出。');
         await this.load(this.run.task,this.run.suite_id);this.selectRun();
       }catch(e){
@@ -112,6 +134,27 @@ export class VLAEvaluation {
     $('ve-target-count').value=suite.target_count||Math.max(15,suite.layouts.length);
     this.renderDraft();this.message('已加载 suite，可继续补拍或调整布局后保存。');
   }
+  confirmDeleteSuite(){
+    const suite=this.catalog.suites.find(s=>s.id===$('ve-suite').value);
+    if(!suite)throw Error('请选择已有 suite');
+    this.deletingSuite={...suite};
+    $('ve-delete-suite-description').textContent=`${suite.task} / ${suite.name} · ${suite.layouts.length} 张布局`;
+    $('ve-delete-suite-dialog').showModal();
+    $('ve-delete-suite-cancel').focus();
+  }
+  async deleteSuite(){
+    const suite=this.deletingSuite;
+    if(!suite)throw Error('请选择已有 suite');
+    $('ve-delete-suite-confirm').disabled=true;
+    try{
+      await this.api('/api/evaluation/suites/delete',{suite_id:suite.id,revision:suite.revision||0,confirmed:true});
+      $('ve-delete-suite-dialog').close();this.deletingSuite=null;
+      if(this.editingSuite?.id===suite.id){this.editingSuite=null;this.draft=[];$('ve-suite-name').value='';this.renderDraft();}
+      if(this.referenceSuiteId===suite.id)this.referenceSuiteId=null;
+      await this.load(suite.task);this.updateTrialControls();
+      this.message(`已删除 suite：${suite.name}；已有评测记录保留。`);
+    }finally{$('ve-delete-suite-confirm').disabled=false;}
+  }
   async manualTransition(action){
     if(!this.run)throw Error('请先加载评测轮次');
     if(action==='start'){++this.cameraGeneration;document.dispatchEvent(new CustomEvent('console-camera-paused'));}
@@ -121,11 +164,59 @@ export class VLAEvaluation {
       this.message(action==='next'?'已切换下一张，请确认机械臂状态并摆好布局。':'手动记录已保存。');
     }catch(e){await this.reloadRun();throw e;}finally{await this.pollControl();}
   }
-  async reloadRun(){if(this.run){this.run=await this.api('/api/evaluation/run?id='+encodeURIComponent(this.run.id));await this.load(this.run.task,this.run.suite_id);this.selectRun();}}
+  async reloadRun(){
+    if(!this.run)return;
+    const previous=this.run,trial=previous.trials[previous.cursor];
+    const editable=t=>t.status==='running'||(t.status==='pending'&&t.failed_attempts?.length);
+    const note=$('ve-note').value,result=$('ve-trial-result').value;
+    this.run=await this.api('/api/evaluation/run?id='+encodeURIComponent(previous.id));
+    await this.load(this.run.task,this.run.suite_id);this.selectRun();
+    if(this.run.cursor===previous.cursor&&editable(trial)&&editable(this.run.trials[this.run.cursor])){
+      $('ve-note').value=note;$('ve-trial-result').value=result;this.saveSession();
+    }
+  }
+  renderResultEditor(){
+    const host=$('ve-result-editor'),r=this.run;
+    if(!r){host.hidden=true;this.resultEditKey=null;return;}
+    const key=JSON.stringify([r.id,r.cursor,r.trials.map(t=>[t.status,t.note])]);
+    if(key===this.resultEditKey)return;
+    this.resultEditKey=key;
+    const completed=r.trials.map((t,index)=>({...t,index})).filter(t=>['success','failure','aborted'].includes(t.status));
+    const selected=this.resultEditorRun===r.id?Number($('ve-result-trial').value):null;
+    this.resultEditorRun=r.id;host.hidden=!completed.length;
+    $('ve-result-editor-title').textContent=`查看 / 修改历史结果（${completed.length} 条）`;
+    $('ve-result-trial').replaceChildren(...completed.map(t=>new Option(`第 ${t.index+1} 张 · ${t.label} · ${labels[t.status]}`,t.index)));
+    if(completed.some(t=>t.index===selected))$('ve-result-trial').value=selected;
+    if(completed.length)this.showSavedResult();
+    const m=r.metrics;
+    $('ve-progress').textContent=`成功 ${m.success} / 已判定 ${m.completed} = ${this.rate(m)}；共 ${m.total} 张，待测 ${m.pending}，进行中 ${m.running}，中止 ${m.aborted}${m.all_scored?' · 全部判定完成':' · 尚非完整测试集结果'}`;
+    const current=r.trials[r.cursor];
+    if(['success','failure','aborted'].includes(current.status)){$('ve-trial-result').value=current.status;$('ve-note').value=current.note||'';}
+    $('ve-current-label').textContent=`第 ${r.cursor+1}/${r.trials.length} 张：${current.label} · ${labels[current.status]}`;
+    $('ve-trials').textContent=r.trials.map((t,i)=>`${i+1}: ${labels[t.status]}`).join(' · ');
+  }
+  showSavedResult(){
+    const trial=this.run?.trials[Number($('ve-result-trial').value)];
+    if(!trial)return;
+    $('ve-result-layout').src=trial.url;$('ve-corrected-result').value=trial.status;
+    $('ve-corrected-note').value=trial.note||'';
+  }
+  async saveSavedResult(){
+    if(!this.run)throw Error('请先加载评测轮次');
+    const index=Number($('ve-result-trial').value);
+    $('ve-save-result').disabled=true;
+    try{
+      this.run=await this.api('/api/evaluation/update-result',{run_id:this.run.id,revision:this.run.revision,
+        trial_index:index,result:$('ve-corrected-result').value,note:$('ve-corrected-note').value});
+      await this.load(this.run.task,this.run.suite_id);this.updateTrialControls();
+      this.message(`第 ${index+1} 张结果已修改，成功率与导出记录已更新。`);
+    }catch(e){await this.reloadRun();throw e;}
+    finally{$('ve-save-result').disabled=false;}
+  }
   async finishRun(exit){
     if(!this.run)throw Error('请先加载评测轮次');
     ++this.cameraGeneration;document.dispatchEvent(new CustomEvent('console-camera-paused'));
-    this.message(exit?'正在停止并保存本轮评测结果…':'正在结束本条并保存结果，复位后自动打开下一张布局和相机…');
+    this.message(exit?'正在停止并保存本轮评测结果…':'正在结束本条并保存结果、断开相机；复位后自动打开下一张布局和相机…');
     try{
       this.run=await this.api('/api/evaluation/'+(exit?'exit-run':'finish-trial'),{run_id:this.run.id,revision:this.run.revision,result:$('ve-trial-result').value,note:$('ve-note').value});
       await this.load(this.run.task,this.run.suite_id);
@@ -135,21 +226,26 @@ export class VLAEvaluation {
   }
   serverReady(server){return !!server?.running&&(server.ready??/\blistening on\b/i.test(server.log||''));}
   updateTrialControls(){
+    this.placeConfigEditor();
+    this.renderResultEditor();
     const c=this.controlState,t=this.run?.trials[this.run.cursor],reset=!!c?.jobs.reset?.running,ev=!!c?.jobs.evaluation?.running,server=c?.jobs.server;
+    const failedPending=t?.status==='pending'&&!!t.failed_attempts?.length,canRecord=t?.status==='running'||failedPending;
     $('ve-eval-start').disabled=this.launchPending||!c?.enabled||c.stopped||reset||ev||!this.serverReady(server)||!t||t.status!=='pending';
-    $('ve-eval-start').textContent=this.launchPending?'正在启动，请查看下方日志…':'启动本条评测（自动释放相机）';
+    $('ve-eval-start').textContent=this.launchPending?'正在启动，请查看下方日志…':t?.failed_attempts?.length?'重试本条评测（自动释放相机）':'启动本条评测（自动释放相机）';
     this.renderTrialLog();
-    $('ve-trial-end').disabled=!c?.enabled||!t?.log_path||reset||!(t.status==='running'||t.reset_error);
+    $('ve-trial-end').disabled=this.launchPending||!c?.enabled||reset||!(failedPending||t?.reset_error||(t?.status==='running'&&t.log_path));
     $('ve-trial-end').textContent=t?.reset_error?'重试复位并下一张':'结束本条（复位并下一张）';
     $('ve-manual-start').disabled=!t||reset||ev||t.status!=='pending';
-    $('ve-manual-result').disabled=!t||reset||ev||t.status!=='running';
+    $('ve-manual-result').disabled=reset||ev||!canRecord;
     $('ve-next').disabled=!t||reset||ev||!['success','failure','aborted'].includes(t.status)||this.run.cursor+1>=this.run.trials.length;
-    $('ve-trial-result').disabled=!t||t.status!=='running'||reset;
+    $('ve-trial-result').disabled=!canRecord||reset;
+    $('ve-note').disabled=!canRecord||reset;
     $('ve-run-exit').disabled=!this.run||reset;
     let step=1,next='继续上次评测：选择任务和已有轮次，点击“继续选中的评测”。新模型或新 checkpoint 请新建轮次。';
     if(this.run){
       if(c?.stopped){step=2;next='启动已锁定。请先人工检查机器人状态，再解除启动锁定。';}
       else if(reset){step=4;next='正在复位，请等待完成后再布置下一张。';}
+      else if(failedPending){step=4;next='客户端异常退出。可重试本条，或选择成功 / 失败 / 中止后点击“结束本条”保存结果并进入下一张。';}
       else if(t?.status==='running'||ev){step=4;next='本条正在评测。结束后选择成功 / 失败 / 中止，再点击“结束本条”；需要立即停止时点击急停。';}
       else if(this.run.metrics.all_scored){step=4;next='本轮已完成，可以导出结果，或退出并保存本轮评测。';}
       else if(t&&['success','failure','aborted'].includes(t.status)){step=4;next='本条结果已保存。终端评测请展开手动记录，点击“继续下一张”；也可退出本轮。';}
@@ -205,7 +301,20 @@ export class VLAEvaluation {
     $('ve-config-lines').textContent=Array.from({length:value.split('\n').length},(_,i)=>i+1).join('\n');
     this.syncConfigScroll();
   }
-  requireSavedConfig(){if(this.configDirty)throw Error('配置已修改，请新建评测轮次，保存本轮配置后再启动评测。');}
+  placeConfigEditor(){
+    const editor=$('ve-config-editor'),host=$('ve-resume-config-host');
+    host.hidden=!this.run;
+    if(this.run){
+      if(editor.parentElement!==host)host.append(editor);
+      $('ve-config-editor-title').textContent='编辑当前轮次配置';
+      if(this.configEditorRun!==this.run.id){editor.open=false;this.configEditorRun=this.run.id;}
+    }else{
+      if(editor.previousSibling!==this.configEditorHome)this.configEditorHome.after(editor);
+      $('ve-config-editor-title').textContent='查看 / 修改评测 YAML（可选）';
+      this.configEditorRun=null;
+    }
+  }
+  requireLoadedConfig(){if($('ve-config').value&&($('ve-config-content').disabled||this.configEditorPath!==$('ve-config').value))throw Error('请等待配置加载完成');}
   async previewConfig(){
     this.configDrafts||={};
     if(this.configEditorPath){if(this.configDirty)this.configDrafts[this.configEditorPath]=$('ve-config-content').value;else delete this.configDrafts[this.configEditorPath];}
@@ -217,7 +326,7 @@ export class VLAEvaluation {
     try{const result=await this.api('/api/evaluation/config?path='+encodeURIComponent(path));if(this.configGeneration===generation){
       this.configEditorPath=path;this.configOriginal=result.content;editor.value=this.configDrafts[path]??result.content;this.renderConfigCode();
       this.configDirty=editor.value!==result.content;editor.disabled=false;
-      $('ve-config-path').textContent=result.path;$('ve-config-state').textContent=this.configDirty?'已修改，将随新轮次保存':'';
+      $('ve-config-path').textContent=result.path;$('ve-config-state').textContent=this.configDirty?'已修改，下次启动时保存到当前轮次':'';
     }}catch(e){if(this.configGeneration===generation)$('ve-config-state').textContent='无法读取配置：'+e.message;}
   }
   setChoice(id,value){const select=$(id);if(value&&![...select.options].some(o=>o.value===value))select.add(new Option(value,value));select.value=value||'';}
@@ -245,7 +354,16 @@ export class VLAEvaluation {
         this.message('模型服务已停止，会话已结束；保存的评测记录仍可继续。');
       }
       this.hadModel=!!server?.running;
-      $('ve-process-status').textContent=(c.enabled?'模型服务：'+(server?.running?(this.serverReady(server)?'已就绪':'加载中'):server?'已退出 '+server.exit_code:'未启动')+'；评测：'+(ev?.running?'运行中':ev?'已退出 '+ev.exit_code:'未启动'):'未配置启动功能')+(reset?.running?'；正在复位':'')+'；'+c.stop_detail+(c.stopped?'；启动已锁定':'')+(p?.unavailable?'；'+p.unavailable:'');
+      if(ev?.recovered&&this.run?.id===ev.run_id&&this.recoveredJob!==ev.log_path&&!this.busy&&!this.launchPending){
+        this.recoveredJob=ev.log_path;
+        try{
+          await this.reloadRun();
+          if(!reset?.running&&this.status.mode!=='reference_only')await this.openCamera();
+          this.trialEvent('推理异常后已恢复待测；请对齐布局后重试本条。');
+          if(ev.recovery_error)this.message(ev.recovery_error,true);
+        }catch(e){this.recoveredJob=null;this.message('恢复评测界面失败：'+e.message,true);}
+      }
+      $('ve-process-status').textContent=(c.enabled?'模型服务：'+(server?.running?(this.serverReady(server)?'已就绪':'加载中'):server?'已退出 '+server.exit_code:'未启动'):'未配置启动功能')+(reset?.running?'；正在复位':'')+(c.stopped?'；启动已锁定':'')+(p?.unavailable?'；'+p.unavailable:'');
       $('ve-process-status').dataset.state=server?.running?(this.serverReady(server)?'ready':'loading'):server?'exited':'idle';
       $('ve-server-start').disabled=!c.enabled||c.stopped||!!server?.running;
       this.updateTrialControls();
@@ -319,6 +437,10 @@ export class VLAEvaluation {
     else if(t)status='本条结果已保存：'+labels[t.status];
     $('ve-trial-status').textContent=status;
     const parts=[...(this.trialEvents||[])];
+    const failed=t?.failed_attempts?.at(-1);
+    if(failed)parts.push('── 上次失败（退出码 '+failed.exit_code+'）──\n日志文件：'+failed.log_path+'\n'+(failed.log_tail||''));
+    const recovery=c?.jobs.evaluation;
+    if(recovery?.recovery_error&&recovery.run_id===this.run?.id)parts.push('异常恢复提示：'+recovery.recovery_error);
     if(t?.start_error&&!parts.some(line=>line.includes(t.start_error)))parts.push('服务端保存的启动错误：'+t.start_error);
     if(t?.log_path)parts.push('客户端日志文件：'+t.log_path);
     if(ev)parts.push('── 评测客户端输出 ──\n'+(ev.log||'进程尚未输出日志。'));
@@ -355,7 +477,8 @@ export class VLAEvaluation {
           $('ve-manual-controls').open=!!saved.manual_open;
         }
         this.selectRun();
-        if(saved?.run_id===runId&&saved.cursor===this.run.cursor&&this.run.trials[this.run.cursor].status==='running'){
+        const trial=this.run.trials[this.run.cursor];
+        if(saved?.run_id===runId&&saved.cursor===this.run.cursor&&(trial.status==='running'||(trial.status==='pending'&&trial.failed_attempts?.length))){
           $('ve-note').value=saved.note??$('ve-note').value;
           if(['success','failure','aborted'].includes(saved.result))$('ve-trial-result').value=saved.result;
           this.saveSession();
@@ -363,7 +486,7 @@ export class VLAEvaluation {
         this.message('已连接评测会话：'+this.run.round+' · 第 '+(this.run.cursor+1)+' 张；不会重新启动机器人。');
       }else if(saved?.run_id)this.clearSession();
     }
-    this.suitesRoot=this.catalog.suites_root;this.builderProgress();const current=task||$('ve-task-filter').value;const tasks=[...new Set(this.catalog.suites.map(s=>s.task))].sort();$('ve-task-filter').replaceChildren(...tasks.map(t=>new Option(t,t)));if(tasks.includes(current))$('ve-task-filter').value=current;this.renderTask(suite);this.roundOptions();}
+    this.suitesRoot=this.catalog.suites_root;this.builderProgress();const current=task||$('ve-task-filter').value;const tasks=[...new Set([...this.catalog.suites,...this.catalog.runs].map(s=>s.task))].sort();$('ve-task-filter').replaceChildren(...tasks.map(t=>new Option(t,t)));if(tasks.includes(current))$('ve-task-filter').value=current;this.renderTask(suite);this.roundOptions();}
   useLayoutReference(suite,layout){
     if(!layout)return;
     const name=suite.name||suite.suite_name||'',view=`${name} ${layout.label}`;
@@ -377,6 +500,7 @@ export class VLAEvaluation {
     $('ve-suite-info').textContent=s?`${s.layouts.length}/${s.target_count||15} 张布局 · 测试集 ID：${s.id}`:'先保存一个任务的布局测试集。';
     if(s&&this.referenceSuiteId!==s.id){this.referenceSuiteId=s.id;this.useLayoutReference(s,this.run?.suite_id===s.id?this.run.trials[this.run.cursor]:s.layouts[0]);}
     $('ve-edit-suite').disabled=!s;
+    $('ve-delete-suite').disabled=!s;
     $('ve-suite-images').hidden=!s;
     $('ve-suite-images-title').textContent=s?`布局图片（${s.layouts.length} 张）`:'布局图片';
     $('ve-suite-preview').innerHTML=s?'<p>已保存的布局图片，点击可加载为相机对齐参考图。</p><div class="ve-layout-gallery">'+s.layouts.map((t,i)=>`<button type="button" data-layout-index="${i}"><img loading="lazy" src="${esc(t.url)}" alt="${esc(t.label)}"><span>${i+1}. ${esc(t.label)}</span></button>`).join('')+'</div>':'';

@@ -29,6 +29,21 @@ class BrowserSession:
                 run_id = self.app.control.jobs.get(kind, {}).get('run_id')
                 if run_id:
                     return run_id
+        # A finished client still owns its trial until the operator records
+        # a result. Another tab must not replace that run or its note draft.
+        job = self.app.control.jobs.get('evaluation', {})
+        run_id = job.get('run_id')
+        if run_id:
+            with self.app.evaluation.lock:
+                try:
+                    record = self.app.evaluation.read('runs', run_id)
+                except (OSError, ValueError):
+                    # Missing/unreadable history must not prevent cleanup of
+                    # the remaining owned processes.
+                    return None
+                if (record['cursor'] == job.get('trial_index')
+                        and record['trials'][record['cursor']]['status'] == 'running'):
+                    return run_id
         return None
 
     def _select_run(self, run_id):
@@ -48,9 +63,9 @@ class BrowserSession:
             self.clients[client] = now + (self.CLOSE_GRACE if closing else self.HEARTBEAT_TIMEOUT)
             if not closing:
                 self.state, self.error = 'connected', ''
-            if not self.app.control.active('server') and not self.app.control.active('evaluation'):
-                self.run_id, self.draft = None, {}
             owned_run_id = self._active_run_id()
+            if not owned_run_id and not self.app.control.active('server'):
+                self.run_id, self.draft = None, {}
             if owned_run_id:
                 self._select_run(owned_run_id)
             run_id = payload.get('run_id')

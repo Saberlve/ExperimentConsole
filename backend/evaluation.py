@@ -124,7 +124,10 @@ class EvaluationService:
 
     def read(self, kind, key):
         key = suite_identifier(key) if kind == 'suites' else identifier(key)
-        return json.loads((self.root / kind / key / 'record.json').read_text())
+        record = json.loads((self.root / kind / key / 'record.json').read_text())
+        if kind == 'suites' and record.get('deleted_at'):
+            raise ValueError('suite 已删除，请刷新列表')
+        return record
 
     def write(self, kind, record):
         folder = self.root / kind / record['id']
@@ -143,7 +146,7 @@ class EvaluationService:
         with self.lock:
             suites = [json.loads(p.read_text()) for p in sorted((self.root / 'suites').glob('*/record.json')) if re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}', p.parent.name)]
             runs = [self.summary(json.loads(p.read_text())) for p in sorted((self.root / 'runs').glob('*/record.json'))]
-            return {'suites': sorted(suites, key=lambda x:x['created_at'], reverse=True),
+            return {'suites': sorted((s for s in suites if not s.get('deleted_at')), key=lambda x:x['created_at'], reverse=True),
                     'suites_root': str((self.root / 'suites').resolve()),
                     'runs': sorted(runs, key=lambda x:x['created_at'], reverse=True)}
 
@@ -227,6 +230,23 @@ class EvaluationService:
                     path.unlink(missing_ok=True)
             return updated
 
+    def delete_suite(self, payload):
+        with self.lock:
+            if payload.get('confirmed') is not True:
+                raise ValueError('请再次确认删除 suite')
+            record = self.read('suites', payload.get('suite_id'))
+            if type(payload.get('revision')) is not int or payload['revision'] != record.get('revision', 0):
+                raise ValueError('suite 已更新，请刷新列表后重新确认删除')
+            referenced = any(r['suite_id'] == record['id'] for r in self.catalog()['runs'])
+            if referenced:
+                # Run records retain URLs into this folder. Remove the suite
+                # from selection while keeping historical layouts available.
+                record.update(deleted_at=utc(), revision=record.get('revision', 0) + 1)
+                self.write('suites', record)
+            else:
+                shutil.rmtree(self.root / 'suites' / record['id'])
+            return dict(deleted=True, suite_id=record['id'])
+
     def create_run(self, payload):
         with self.lock:
             suite = self.read('suites', payload.get('suite_id'))
@@ -267,6 +287,26 @@ class EvaluationService:
                     shutil.rmtree(folder)
                 raise
             return self.summary(record)
+
+    def update_run_config(self, record, content):
+        with self.lock:
+            content = validate_eval_yaml(content)
+            folder = self.root / 'runs' / record['id']
+            dest = folder / config_filename(record['task'], record['round'])
+            fd, tmp = tempfile.mkstemp(dir=folder, prefix='.config-')
+            try:
+                with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+                    stream.write(content)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(tmp, dest)
+            finally:
+                Path(tmp).unlink(missing_ok=True)
+            record.update(eval_config=str(dest.resolve()),
+                          eval_config_sha256=hashlib.sha256(content.encode('utf-8')).hexdigest(),
+                          revision=record['revision'] + 1)
+            self.write('runs', record)
+            return record
 
     def summary(self, record):
         statuses = [t['status'] for t in record['trials']]
@@ -316,13 +356,18 @@ class EvaluationService:
                     raise ValueError('已有样本标记为开始，请先记录结果或中止')
                 self.app.release_preview()
                 trial.update(status='running', started_at=utc())
+                trial.pop('start_error', None)
             elif action == 'result':
-                if trial['status'] != 'running' or payload.get('result') not in ('success', 'failure', 'aborted'):
+                failed_pending = trial['status'] == 'pending' and bool(trial.get('failed_attempts'))
+                if (trial['status'] != 'running' and not failed_pending) or payload.get('result') not in ('success', 'failure', 'aborted'):
                     raise ValueError('先标记开始，再记录成功、失败或中止')
                 note = payload.get('note', '')
                 if not isinstance(note, str) or len(note) > 4096:
                     raise ValueError('备注必须是最多 4096 字符的文字')
+                if failed_pending:
+                    trial['started_at'] = trial['failed_attempts'][-1].get('started_at')
                 trial.update(status=payload['result'], note=note, finished_at=utc())
+                trial.pop('start_error', None)
             elif action == 'next':
                 if trial['status'] not in ('success', 'failure', 'aborted'):
                     raise ValueError('先记录当前布局结果，再切换下一张')
@@ -334,6 +379,28 @@ class EvaluationService:
             record['revision'] += 1
             self.write('runs', record)
             return self.summary(record)
+
+    def update_result(self, payload):
+        with self.lock:
+            record = self.read('runs', payload.get('run_id'))
+            if type(payload.get('revision')) is not int or payload['revision'] != record['revision']:
+                raise ValueError('记录已更新，请刷新后重试（避免多个页面覆盖）')
+            index = payload.get('trial_index')
+            if type(index) is not int or not 0 <= index < len(record['trials']):
+                raise ValueError('请选择已有结果的样本')
+            trial = record['trials'][index]
+            if trial['status'] not in ('success', 'failure', 'aborted'):
+                raise ValueError('只能修改已记录的结果')
+            result = payload.get('result')
+            if result not in ('success', 'failure', 'aborted'):
+                raise ValueError('请选择成功、失败或中止')
+            note = payload.get('note', trial.get('note', ''))
+            if not isinstance(note, str) or len(note) > 4096:
+                raise ValueError('备注必须是最多 4096 字符的文字')
+            trial.update(status=result, note=note, result_updated_at=utc())
+            record['revision'] += 1
+            self.write('runs', record)
+            return self.save_results(record['id'])
 
     def export_csv(self, key):
         with self.lock:

@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>VLArmory · 实验工作台</title><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/workbench.css"></head>
-<body><header><span class="eyebrow">VLARMORY / EXPERIMENTS</span><h1>实验工作台</h1>
+<body><div id="global-safety-bar" role="region" aria-label="机器人急停"><span>机器人控制</span><button id="ve-emergency" class="global-emergency" disabled>急停 / 停止评测</button></div><header><span class="eyebrow">VLARMORY / EXPERIMENTS</span><h1>实验工作台</h1>
 <p>从训练配置、检查点到真机评测，在一个工作台中完成。</p><p id="mode"></p>
 <nav aria-label="实验工作台"><button data-workspace="training">训练配置</button><button data-workspace="checkpoints">检查点</button><button data-page="vla">真机评测</button><button data-page="wm">WM 首帧</button><button data-page="idm">IDM 测试与回放</button></nav></header>
 <div id="console-stage" hidden><main><section class="controls"><h2 id="title">WM First Frame</h2><label>任务名称 / ID<input id="task" value="scene-001" maxlength="256"></label><label>当前相机<select id="camera"></select></label><button id="refresh">开启 / 刷新相机</button><button id="release-camera">释放相机供 VLA 使用</button>

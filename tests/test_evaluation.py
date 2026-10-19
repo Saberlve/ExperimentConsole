@@ -50,6 +50,37 @@ class EvaluationTests(unittest.TestCase):
             self.service.create_run(dict(payload, eval_config_content='fps: [broken'))
         self.assertEqual(len(self.service.catalog()['runs']), count)
 
+    def test_delete_suite_requires_confirmation_and_current_revision(self):
+        payload = dict(suite_id=self.suite['id'], revision=0)
+        folder = self.service.root / 'suites' / self.suite['id']
+        for confirmed in (None, False, 'true', 1):
+            with self.assertRaisesRegex(ValueError, '再次确认'):
+                self.service.delete_suite(dict(payload, confirmed=confirmed))
+        with self.assertRaisesRegex(ValueError, '已更新'):
+            self.service.delete_suite(dict(payload, confirmed=True, revision=1))
+        self.assertTrue(folder.is_dir())
+        self.service.delete_suite(dict(payload, confirmed=True))
+        self.assertFalse(folder.exists())
+        self.assertEqual(self.service.catalog()['suites'], [])
+
+    def test_delete_used_suite_preserves_history_and_blocks_new_runs(self):
+        run = self.run_record()
+        self.service.delete_suite(dict(suite_id=self.suite['id'], revision=0, confirmed=True))
+        self.assertEqual(self.service.catalog()['suites'], [])
+        self.assertEqual(self.service.catalog()['runs'][0]['id'], run['id'])
+        for layout in run['trials']:
+            self.assertTrue(self.app.asset(layout['url']).is_file())
+        # Existing rounds can still advance using their saved layout data.
+        started = self.transition(run, 'start')
+        self.assertEqual(started['trials'][0]['status'], 'running')
+        with self.assertRaisesRegex(ValueError, '已删除'):
+            self.run_record()
+        with self.assertRaisesRegex(ValueError, '已删除'):
+            self.service.update_suite(dict(suite_id=self.suite['id'], revision=0))
+        restarted = Application(self.config).evaluation
+        self.assertEqual(restarted.catalog()['suites'], [])
+        self.assertEqual(restarted.catalog()['runs'][0]['id'], run['id'])
+
     def transition(self,run,action,**kwargs):
         return self.service.transition(dict(run_id=run['id'],revision=run['revision'],action=action,**kwargs))
 
@@ -79,6 +110,47 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual(saved,r)
         self.assertIn('log/path',restarted.export_csv(r['id']))
         self.assertEqual(saved['cursor'],3)
+
+    def test_update_previous_result_changes_metrics_and_exports_without_robot(self):
+        run = self.run_record()
+        run = self.transition(run, 'start')
+        run = self.transition(run, 'result', result='failure', note='original note')
+        original = dict(run['trials'][0])
+        run = self.transition(run, 'next')
+        run = self.transition(run, 'start')
+        with patch.object(self.app, 'release_preview') as release, \
+             patch.object(self.app, 'enable_preview') as preview, \
+             patch.object(self.app.control, 'finish_trial') as finish:
+            for result in ('success', 'aborted', 'failure'):
+                run = self.service.update_result(dict(run_id=run['id'], revision=run['revision'],
+                    trial_index=0, result=result, note='corrected note'))
+                self.assertEqual(run['cursor'], 1)
+                self.assertEqual(run['trials'][1]['status'], 'running')
+                self.assertEqual(run['trials'][0]['started_at'], original['started_at'])
+                self.assertEqual(run['trials'][0]['finished_at'], original['finished_at'])
+                self.assertEqual(run['trials'][0]['note'], 'corrected note')
+                self.assertEqual(run['metrics']['success'], int(result == 'success'))
+                self.assertEqual(run['metrics']['completed'], int(result != 'aborted'))
+                self.assertEqual(json.loads(Path(run['result_files']['json']).read_text())['trials'][0]['status'], result)
+                self.assertIn(result, Path(run['result_files']['csv']).read_text())
+                self.assertEqual(self.service.catalog()['runs'][0]['trials'][0]['status'], result)
+            release.assert_not_called(); preview.assert_not_called(); finish.assert_not_called()
+
+    def test_update_result_rejects_unrecorded_rows_invalid_input_and_stale_revision(self):
+        run = self.run_record()
+        payload = dict(run_id=run['id'], revision=run['revision'], trial_index=0, result='success')
+        with self.assertRaisesRegex(ValueError, '只能修改已记录'):
+            self.service.update_result(payload)
+        run = self.transition(run, 'start')
+        run = self.transition(run, 'result', result='failure')
+        with self.assertRaisesRegex(ValueError, '记录已更新'):
+            self.service.update_result(payload)
+        payload['revision'] = run['revision']
+        for changes in (dict(trial_index=-1), dict(trial_index=True), dict(trial_index=100),
+                        dict(result='pending'), dict(note='a' * 4097)):
+            with self.assertRaises(ValueError):
+                self.service.update_result(dict(payload, **changes))
+        self.assertEqual(self.service.read('runs', run['id'])['trials'][0]['status'], 'failure')
 
     def test_transitions_reject_duplicates_and_unscored_next(self):
         r=self.run_record()
@@ -181,5 +253,21 @@ class EvaluationHTTPTests(unittest.TestCase):
         self.assertEqual(self.request('/api/evaluation/run?id='+run['id'])[1]['id'],run['id'])
         self.assertEqual(self.request('/api/evaluation/export?id='+run['id'])[0],200)
         self.assertEqual(len(self.request('/api/evaluation/catalog')[1]['runs']),1)
+        deletion = dict(suite_id=suite['id'], revision=0, confirmed=True)
+        self.assertEqual(self.request('/api/evaluation/suites/delete',deletion)[0],403)
+        self.assertEqual(self.request('/api/evaluation/suites/delete',dict(deletion,confirmed=False),header)[0],400)
+        self.assertEqual(self.request('/api/evaluation/suites/delete',deletion,header)[0],200)
+        catalog = self.request('/api/evaluation/catalog')[1]
+        self.assertEqual(catalog['suites'], [])
+        self.assertEqual(catalog['runs'][0]['id'], run['id'])
+        record = self.app.evaluation.read('runs', run['id'])
+        record['trials'][0]['status'] = 'failure'
+        self.app.evaluation.write('runs', record)
+        correction = dict(run_id=run['id'], revision=record['revision'], trial_index=0, result='success')
+        self.assertEqual(self.request('/api/evaluation/update-result',correction)[0],403)
+        code, updated = self.request('/api/evaluation/update-result',correction,header)
+        self.assertEqual(code,200)
+        self.assertEqual(updated['metrics']['success'],1)
+        self.assertEqual(updated['cursor'],record['cursor'])
 
 if __name__=='__main__':unittest.main()

@@ -89,9 +89,34 @@ def check_mode(browser, mode):
             assert [t['status'] for t in run['trials']] == ['success', 'failure']
             assert run['trials'][0]['note'] == 'manual result'
             assert Path(run['result_files']['json']).is_file()
+            # Deletion needs a separate confirmation; cancelling preserves the suite.
+            page.locator('#ve-setup').evaluate('(el)=>el.open=true')
+            page.locator('#ve-delete-suite').click()
+            expect(page.locator('#ve-delete-suite-dialog')).to_be_visible()
+            expect(page.locator('#ve-delete-suite-description')).to_contain_text('resume_suite')
+            expect(page.locator('#ve-delete-suite-cancel')).to_be_focused()
+            expect(page.locator('#ve-delete-suite-dialog #ve-emergency')).to_be_visible()
+            assert len(app.evaluation.catalog()['suites']) == 1
+            page.locator('#ve-delete-suite-cancel').click()
+            expect(page.locator('#ve-delete-suite-dialog')).not_to_be_visible()
+            assert len(app.evaluation.catalog()['suites']) == 1
+            page.locator('#ve-delete-suite').click()
+            page.locator('#ve-delete-suite-confirm').click()
+            expect(page.locator('#message')).to_contain_text('已删除 suite')
+            expect(page.locator('#ve-suite option')).to_have_count(0)
+            expect(page.locator('#ve-delete-suite')).to_be_disabled()
+            assert app.evaluation.catalog()['suites'] == []
+            assert len(app.evaluation.catalog()['runs']) == 1
+            for layout in run['trials']:
+                assert app.asset(layout['url']).is_file()
+            # A task with no remaining suite must still expose its saved rounds.
+            page.reload()
+            expect(page.locator('#ve-task-filter')).to_have_value('egg')
+            page.locator('#ve-load').click()
+            expect(page.locator('#ve-progress')).to_contain_text('全部判定完成')
             assert not app.control.jobs
             assert not errors, errors
-            print(mode + ': suite reload/edit and manual resume passed')
+            print(mode + ': suite reload/edit, confirmed deletion with history preserved and manual resume passed')
         finally:
             page.close()
             server.shutdown()

@@ -141,5 +141,51 @@ class BrowserSessionTests(unittest.TestCase):
         self.assertEqual(self.record['trials'][0]['note'], 'saved note')
         self.assertEqual(other['trials'][0]['status'], 'pending')
 
+    def test_exited_client_keeps_unscored_run_and_draft_until_cleanup(self):
+        other = dict(self.record, id='other', trials=[dict(status='pending', note='')])
+        self.app.evaluation.read = lambda _, key: {'run': self.record, 'other': other}[key]
+        self.app.evaluation.save_results = Mock()
+        self.app.control.jobs['evaluation'] = dict(run_id='run', trial_index=0)
+        self.record['trials'][0]['status'] = 'running'
+        self.running['evaluation'] = True
+        with patch('backend.browser_session.time.monotonic', return_value=0):
+            self.beat('one')
+            self.running['evaluation'] = False
+            self.beat('one', closing=True)
+            self.session.heartbeat(dict(client_id='two', run_id='other', cursor=0, note='wrong note'))
+            self.session.heartbeat(dict(client_id='two', run_id='other', cursor=0, note='wrong note'), closing=True)
+        self.assertEqual(self.session.run_id, 'run')
+        self.assertEqual(self.session.draft['note'], 'draft note')
+        self.assertTrue(self.session.expire(now=16))
+        self.assertEqual(self.record['trials'][0]['status'], 'aborted')
+        self.assertEqual(self.record['trials'][0]['note'], 'draft note')
+        self.assertEqual(other['trials'][0]['status'], 'pending')
+        self.assertTrue(all(call.args == ('run',) for call in self.app.evaluation.save_results.call_args_list))
+        self.assertNotIn('stop_robot', self.events)
+
+    def test_expiry_finds_client_that_started_and_exited_between_heartbeats(self):
+        other = dict(self.record, id='other', trials=[dict(status='pending', note='')])
+        self.app.evaluation.read = lambda _, key: {'run': self.record, 'other': other}[key]
+        with patch('backend.browser_session.time.monotonic', return_value=0):
+            self.session.heartbeat(dict(client_id='tab', run_id='other', cursor=0, note='wrong note'))
+        self.record['trials'][0].update(status='running', note='saved note')
+        self.app.control.jobs['evaluation'] = dict(run_id='run', trial_index=0)
+        self.assertTrue(self.session.expire(now=121))
+        self.assertEqual(self.record['trials'][0]['status'], 'aborted')
+        self.assertEqual(self.record['trials'][0]['note'], 'saved note')
+        self.assertEqual(other['trials'][0]['status'], 'pending')
+
+    def test_saved_result_releases_exited_clients_run_ownership(self):
+        other = dict(self.record, id='other', trials=[dict(status='pending', note='')])
+        self.app.evaluation.read = lambda _, key: {'run': self.record, 'other': other}[key]
+        self.app.control.jobs['evaluation'] = dict(run_id='run', trial_index=0)
+        self.record['trials'][0]['status'] = 'success'
+        self.session.heartbeat(dict(client_id='tab', run_id='other', cursor=0, note='other draft'))
+        self.assertEqual(self.session.run_id, 'other')
+        # An old job must not claim a later trial in its run, either.
+        self.record['trials'].append(dict(status='running', note=''))
+        self.record['cursor'] = 1
+        self.assertIsNone(self.session._active_run_id())
+
 
 if __name__ == '__main__':unittest.main()

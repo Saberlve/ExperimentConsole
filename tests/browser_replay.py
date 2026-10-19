@@ -2,6 +2,7 @@
 import base64
 import io
 import os
+import secrets
 import tempfile
 import threading
 import time
@@ -34,6 +35,9 @@ def main():
                 page.goto(f'http://127.0.0.1:{server.server_port}/#idm')
                 expect(page.locator('#action-replay-panel')).to_be_visible()
                 expect(page.locator('#replay-start')).to_be_disabled()
+                # A server restart rotates the token while an existing tab keeps
+                # its initial capabilities. Upload must refresh authorization.
+                app.replay.token=secrets.token_urlsafe(32)
                 page.locator('#action-drop').evaluate("""(element,encoded)=>{
                     const bytes=Uint8Array.from(atob(encoded),c=>c.charCodeAt(0));
                     const transfer=new DataTransfer();
@@ -66,9 +70,29 @@ def main():
                 page.locator('#action-csv').set_input_files({'name':'bad.csv','mimeType':'text/csv','buffer':b'bad\n1\n2\n'})
                 expect(page.locator('#action-summary')).to_contain_text('转换失败')
                 expect(page.locator('#replay-start')).to_be_disabled()
+                # Authorization failures must block upload and clear the old job.
+                uploads=[]
+                page.on('request',lambda request:uploads.append(request.url) if request.url.endswith('/api/replay/upload') else None)
+                page.route('**/api/status',lambda route:route.fulfill(status=403,json={'error':'仅允许配置的本机地址访问'}))
+                page.locator('#action-csv').set_input_files({'name':'blocked.csv','mimeType':'text/csv','buffer':action_csv()})
+                expect(page.locator('#action-summary')).to_contain_text('转换失败：仅允许配置的本机地址访问')
+                expect(page.locator('#action-download')).to_be_hidden()
+                expect(page.locator('#replay-start')).to_be_disabled()
+                assert not uploads
+                page.unroute('**/api/status')
+                # Refresh execution capabilities too, rather than keeping a stale
+                # enabled flag when the replacement server disables real replay.
+                app.replay.token=secrets.token_urlsafe(32)
+                app.replay.enabled=False
+                page.locator('#action-csv').set_input_files({'name':'refreshed.csv','mimeType':'text/csv','buffer':action_csv()})
+                expect(page.locator('#action-summary')).to_contain_text('离线校验通过')
+                expect(page.locator('#replay-enabled')).to_contain_text('真实动作禁用')
+                page.locator('#replay-confirm').check()
+                expect(page.locator('#replay-start')).to_be_disabled()
+                assert len(adapter.launches)==2
                 assert not errors,errors
                 browser.close()
-                print('PASS: HTML5 CSV drop, real conversion/dry-run, summary/download, explicit execute, single-run locking, fake logs/stop/completion, invalid CSV; no robot connected or JavaScript errors')
+                print('PASS: HTML5 CSV drop, token rotation, authorization rejection, refreshed capabilities, real conversion/dry-run, summary/download, explicit execute, single-run locking, fake logs/stop/completion, invalid CSV; no robot connected or JavaScript errors')
         finally:
             app.replay.close();server.shutdown();server.server_close();thread.join()
             if app.replay.thread:app.replay.thread.join(2)

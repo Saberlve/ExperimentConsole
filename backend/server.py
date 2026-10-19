@@ -362,6 +362,8 @@ def _make_console_handler(app):
                     self.reply(app.evaluation.create_suite(payload))
                 elif path == '/api/evaluation/suites/update':
                     self.reply(app.evaluation.update_suite(payload))
+                elif path == '/api/evaluation/suites/delete':
+                    self.reply(app.evaluation.delete_suite(payload))
                 elif path == '/api/evaluation/sources/load':
                     self.reply(app.evaluation.load_source(payload.get('source_id')))
                 elif path == '/api/evaluation/runs':
@@ -374,6 +376,8 @@ def _make_console_handler(app):
                     self.reply(app.control.finish_trial(payload, exit_run=True))
                 elif path == '/api/evaluation/transition':
                     self.reply(app.control.transition_trial(payload))
+                elif path == '/api/evaluation/update-result':
+                    self.reply(app.evaluation.update_result(payload))
                 elif path == '/api/replay/start':
                     self.reply(app.replay.start(payload.get('job_id'), payload.get('confirmed')))
                 elif path == '/api/replay/stop':

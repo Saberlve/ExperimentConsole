@@ -7,8 +7,7 @@ const LABELS = {idle:'未运行', checking:'正在启动回放程序', starting:
 export class ActionReplay {
   constructor(capabilities) {
     this.capabilities=capabilities;this.job=null;this.busy=false;this.state='idle';this.polling=false;
-    $('replay-ip').textContent=capabilities.robot_ip;
-    $('replay-enabled').textContent=capabilities.enabled ? '真实回放已启用，只有点击执行才发送动作' : 'DEMO：支持 CSV 转换与离线检查，真实动作禁用';
+    this.showCapabilities();
     $('replay-confirm').onchange=()=>this.buttons();
     $('action-csv').onchange=()=>this.upload($('action-csv').files);
     const drop=$('action-drop');
@@ -33,6 +32,19 @@ export class ActionReplay {
     };
     this.buttons();this.poll();setInterval(()=>this.poll(),750);
   }
+  showCapabilities(){
+    $('replay-ip').textContent=this.capabilities.robot_ip;
+    $('replay-enabled').textContent=this.capabilities.enabled ? '真实回放已启用，只有点击执行才发送动作' : 'DEMO：支持 CSV 转换与离线检查，真实动作禁用';
+  }
+  async refreshAuthorization(){
+    // An open tab can outlive the server process and its authorization token.
+    const response=await fetch('/api/status',{cache:'no-store'});
+    const data=await response.json();
+    if(!response.ok)throw new Error(data.error||'无法更新控制台授权，请刷新页面');
+    if(!data.replay?.token)throw new Error('无法获取控制台授权，请刷新页面');
+    Object.assign(this.capabilities,data.replay);
+    this.showCapabilities();this.buttons();
+  }
   async request(path,body,raw=false){
     const response=await fetch(path,{method:'POST',headers:{'X-Replay-Token':this.capabilities.token,
       'Content-Type':raw?'text/csv':'application/json'},body:raw?body:JSON.stringify(body)});
@@ -52,6 +64,7 @@ export class ActionReplay {
     }
     this.busy=true;this.buttons();$('action-summary').textContent='正在自动转换并运行离线校验，不连接机械臂…';
     try{
+      await this.refreshAuthorization();
       const result=await this.request('/api/replay/upload',files[0],true);this.job=result;
       const vector=values=>values.map(value=>value.toFixed(2)).join(', ');
       $('action-summary').textContent=[`文件：${files[0].name}`,`格式：${result.format} · ${result.frames} 帧 · ${result.fps.toFixed(3)} Hz · ${result.duration_s.toFixed(2)} 秒`,
