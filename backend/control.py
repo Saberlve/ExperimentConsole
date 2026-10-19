@@ -133,6 +133,19 @@ class ProcessControl:
             raise ValueError('评测记录已更新，请重新加载轮次')
         return record
 
+    def transition_trial(self, payload):
+        """Manual recording and resuming a saved run never move the robot."""
+        if not self.workflow_lock.acquire(blocking=False):
+            raise ValueError('正在启动、结束或复位，请等待完成')
+        try:
+            with self.app.evaluation.lock, self.lock:
+                if self.active('reset') or self.active('evaluation'):
+                    raise ValueError('请先停止网页启动的评测或复位进程')
+                record = self.app.evaluation.transition(payload)
+                return self.app.evaluation.save_results(record['id'])
+        finally:
+            self.workflow_lock.release()
+
     def start_trial(self, payload):
         if not self.workflow_lock.acquire(blocking=False):
             raise ValueError('正在处理上一条评测，请稍后重试')

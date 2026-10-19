@@ -148,6 +148,26 @@ class TrialLifecycleTest(unittest.TestCase):
         self.assertFalse(self.control.active('evaluation'))
         self.assertEqual(self.app.evaluation.read('runs',self.run['id'])['trials'][0]['status'],'pending')
 
+    def test_exit_reload_advance_and_start_remaining_trial(self):
+        self.start()
+        saved = self.finish(exit_run=True)
+        self.run = self.control.transition_trial(dict(run_id=saved['id'], revision=saved['revision'], action='next'))
+        self.assertEqual(self.run['cursor'], 1)
+        self.assertEqual(self.run['trials'][0]['status'], 'success')
+        self.assertNotIn('reset', self.events.read_text().splitlines())
+        self.start()
+        self.assertEqual(self.run['trials'][1]['status'], 'running')
+
+    def test_manual_transition_cannot_interrupt_owned_workflow(self):
+        self.start()
+        payload = dict(run_id=self.run['id'], revision=self.run['revision'], action='result', result='success')
+        with self.assertRaisesRegex(ValueError, '请先停止'):
+            self.control.transition_trial(payload)
+        with self.control.workflow_lock:
+            with self.assertRaisesRegex(ValueError, '请等待完成'):
+                self.control.transition_trial(payload)
+        self.assertEqual(self.app.evaluation.read('runs', self.run['id'])['trials'][0]['status'], 'running')
+
     def test_emergency_during_reset_prevents_next_and_camera(self):
         self.start();self.profile['reset']=self.command('reset',True)
         entered=threading.Event();errors=[];original=self.control._spawn

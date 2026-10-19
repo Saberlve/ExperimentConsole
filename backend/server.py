@@ -363,11 +363,7 @@ def _make_console_handler(app):
                 elif path == '/api/evaluation/exit-run':
                     self.reply(app.control.finish_trial(payload, exit_run=True))
                 elif path == '/api/evaluation/transition':
-                    if app.control.active('reset'):
-                        raise ValueError('正在复位，请等待完成')
-                    if app.control.active('evaluation') and payload.get('action') in ('result', 'next'):
-                        raise ValueError('请先停止评测进程，再记录结果或切换布局')
-                    self.reply(app.evaluation.transition(payload))
+                    self.reply(app.control.transition_trial(payload))
                 elif path == '/api/replay/start':
                     self.reply(app.replay.start(payload.get('job_id'), payload.get('confirmed')))
                 elif path == '/api/replay/stop':
