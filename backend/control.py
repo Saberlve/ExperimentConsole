@@ -17,6 +17,8 @@ class ProcessControl:
         self.jobs = {}
         self.lock = threading.RLock()
         self.stop_lock = threading.Lock()
+        self.safety_lock = threading.RLock()
+        self.stop_confirmed = False
         self.workflow_lock = threading.Lock()
         self.directory = app.output / 'processes'
         self.latch = self.directory / 'STOPPED'
@@ -232,6 +234,35 @@ class ProcessControl:
             self.workflow_lock.release()
 
     def _start_trial(self, payload):
+        if payload.get('restart_current'):
+            with self.app.evaluation.lock, self.lock:
+                record = self._current_run(payload)
+                trial = record['trials'][record['cursor']]
+                job = self.jobs.get('evaluation', {})
+                if (trial['status'] != 'running' or 'eval_config_content' not in payload
+                        or job.get('run_id') != record['id'] or job.get('trial_index') != record['cursor']):
+                    raise ValueError('只能应用配置并重启当前网页评测')
+                if self.stopped or self.stopping.is_set() or self.emergency_requested.is_set():
+                    raise ValueError('急停已锁定，请先人工检查并解除启动锁定')
+                # Validate edits before stopping the current client.
+                from .evaluation import validate_eval_yaml
+                validate_eval_yaml(payload['eval_config_content'])
+            # Do not hold self.lock while waiting for the controller stop lock.
+            self._stop_item(record)
+            with self.app.evaluation.lock, self.lock:
+                if self.stopped or self.emergency_requested.is_set():
+                    raise ValueError('已急停，不会重启评测')
+                record = self._current_run(payload)
+                trial = record['trials'][record['cursor']]
+                trial.setdefault('restarted_attempts', []).append(dict(
+                    started_at=trial.get('started_at'), ended_at=time.time(),
+                    log_path=trial.get('log_path'),
+                    eval_config_content=Path(record['eval_config']).read_text()))
+                trial.update(status='pending', started_at=None, finished_at=None)
+                trial.pop('log_path', None)
+                record['revision'] += 1
+                self.app.evaluation.write('runs', record)
+                payload = dict(payload, revision=record['revision'])
         with self.app.evaluation.lock, self.lock:
             record = self._current_run(payload)
             profile = self._profile(record['model'])
@@ -286,6 +317,7 @@ class ProcessControl:
                     raise RuntimeError(result.stderr[-1500:] or result.stdout[-1500:])
                 self.stop_detail = result.stdout.strip()
         except Exception as exc:
+            self.stop_confirmed = False
             self.directory.mkdir(parents=True, exist_ok=True)
             self.latch.write_text('Item stop failed; manual check required\n')
             self.stopped = True
@@ -344,6 +376,11 @@ class ProcessControl:
             failed_record = bool(trial.get('failed_attempts'))
             if not exit_run and not failed_record and (job.get('run_id') != record['id'] or job.get('trial_index') != record['cursor']):
                 raise ValueError('当前样本没有由网页启动的 client，不能自动复位')
+            # An explicit finish/reset may recover a completed software stop.
+            # Clear it before this workflow begins, never after a new stop arrives.
+            with self.lock, self.safety_lock:
+                if not exit_run and self.stopped and self.stop_confirmed and not self.stopping.is_set():
+                    self.unlock()
             stop_error = None
             try:
                 self._stop_item(record)
@@ -365,7 +402,10 @@ class ProcessControl:
         if stop_error:
             raise ValueError('本条结果已保存；' + stop_error) from None
         if exit_run:
-            self.app.release_preview()
+            try:
+                self.app.release_preview()
+            finally:
+                self.stop_server()
             return record
         try:
             self._reset_item(record)
@@ -413,8 +453,11 @@ class ProcessControl:
     def emergency_stop(self):
         if not self.enabled:
             raise ValueError('未配置机器人停止接口')
-        self.emergency_requested.set()
-        self.stopping.set()  # Never waits behind model loading / config validation.
+        with self.safety_lock:
+            self.stop_confirmed = False
+            request = self.stop_request = object()
+            self.emergency_requested.set()
+            self.stopping.set()  # Never waits behind model loading / config validation.
         with self.stop_lock:
             self.stopped = True
             errors = []
@@ -448,14 +491,17 @@ class ProcessControl:
                 self.stop_detail = result.stdout.strip()
             except Exception as exc:
                 errors.append(str(exc))
-            self.stopping.clear()
+            with self.safety_lock:
+                if self.stop_request is request:
+                    self.stopping.clear()
+                    self.stop_confirmed = not errors
             if errors:
                 self.stop_detail = '停止未确认，请使用实体急停：' + '; '.join(errors)
                 raise ValueError(self.stop_detail)
             return self.status()
 
     def unlock(self):
-        with self.lock:
+        with self.lock, self.safety_lock:
             if self.stopping.is_set() or self.active('evaluation') or self.active('reset'):
                 raise ValueError('仍在停止或评测中')
             self.latch.unlink(missing_ok=True)

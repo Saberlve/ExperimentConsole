@@ -368,6 +368,23 @@ class EvaluationService:
                     trial['started_at'] = trial['failed_attempts'][-1].get('started_at')
                 trial.update(status=payload['result'], note=note, finished_at=utc())
                 trial.pop('start_error', None)
+            elif action == 'select':
+                target = payload.get('trial_index')
+                if type(target) is not int or not 0 <= target < len(record['trials']):
+                    raise ValueError('请选择有效的测试小项')
+                if any(t['status'] == 'running' for t in record['trials']):
+                    raise ValueError('请先结束当前评测并保存结果，再选择测试小项')
+                selected = record['trials'][target]
+                if selected['status'] in ('success', 'failure', 'aborted'):
+                    if payload.get('retest') is not True:
+                        raise ValueError('此项已有结果，请选择重测')
+                    previous = {k: v for k, v in selected.items() if k != 'previous_results'}
+                    selected.setdefault('previous_results', []).append(previous)
+                    selected.update(status='pending', started_at=None, finished_at=None, note='')
+                    for key in ('log_path', 'reset_log_path', 'reset_error', 'start_error',
+                                'failed_attempts', 'restarted_attempts', 'result_updated_at'):
+                        selected.pop(key, None)
+                record['cursor'] = target
             elif action == 'next':
                 if trial['status'] not in ('success', 'failure', 'aborted'):
                     raise ValueError('先记录当前布局结果，再切换下一张')

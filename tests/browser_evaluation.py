@@ -28,6 +28,8 @@ def check_mode(browser, mode):
         try:
             page.goto(f'http://127.0.0.1:{server.server_port}/#vla')
             expect(page.locator('#ve-load')).to_have_text('继续选中的评测')
+            expect(page.locator('#ve-resume')).to_be_visible()
+            expect(page.locator('#ve-setup')).to_be_visible()
             assert page.locator('#ve-resume').bounding_box()['y'] < page.locator('#ve-setup').bounding_box()['y']
             expect(page.locator('#ve-edit-suite')).to_be_enabled()
             # A fresh page must restore the persisted draft and revision for editing.
@@ -53,6 +55,13 @@ def check_mode(browser, mode):
             page.locator('#ve-manual-checkpoint').fill('terminal-checkpoint')
             page.locator('#ve-round').fill('manual-round')
             page.locator('#ve-create-run').click()
+            expect(page.locator('#ve-trial-select option')).to_have_count(2)
+            page.locator('#ve-trial-select').select_option('1')
+            page.locator('#ve-select-trial').click()
+            expect(page.locator('#ve-current-label')).to_contain_text('第 2/2 张')
+            page.locator('#ve-trial-select').select_option('0')
+            page.locator('#ve-select-trial').click()
+            expect(page.locator('#ve-current-label')).to_contain_text('第 1/2 张')
             expect(page.locator('#ve-alignment #comparison-panels')).to_be_visible()
             expect(page.locator('#ve-alignment #overlay-live')).to_be_visible()
             expect(page.locator('#ve-alignment #alpha')).to_be_visible()
@@ -89,9 +98,21 @@ def check_mode(browser, mode):
             assert [t['status'] for t in run['trials']] == ['success', 'failure']
             assert run['trials'][0]['note'] == 'manual result'
             assert Path(run['result_files']['json']).is_file()
-            # Deletion needs a separate confirmation; cancelling preserves the suite.
-            page.locator('#ve-setup').evaluate('(el)=>el.open=true')
-            page.locator('#ve-delete-suite').click()
+            # Summary stays visible; per-layout results are collapsed independently.
+            expect(page.locator('#ve-comparison')).to_be_visible()
+            expect(page.locator('#ve-comparison > .ve-table > table')).to_contain_text('50.0%')
+            details = page.locator('#ve-comparison .ve-trial-results').first
+            assert not details.evaluate('(el)=>el.open')
+            expect(details.locator('ol')).not_to_be_visible()
+            details.locator('summary').click()
+            expect(details.locator('li')).to_have_count(2)
+            expect(details.locator('li').nth(0)).to_contain_text('成功')
+            expect(details.locator('li').nth(1)).to_contain_text('失败')
+            # Suite management remains visible when new-round setup is collapsed.
+            page.locator('#ve-setup').evaluate('(el)=>el.open=false')
+            expect(page.locator('#ve-suite-management')).to_be_visible()
+            expect(page.locator('#ve-comparison [data-delete-suite]').first).to_be_visible()
+            page.locator('#ve-comparison [data-delete-suite]').first.click()
             expect(page.locator('#ve-delete-suite-dialog')).to_be_visible()
             expect(page.locator('#ve-delete-suite-description')).to_contain_text('resume_suite')
             expect(page.locator('#ve-delete-suite-cancel')).to_be_focused()
@@ -100,11 +121,11 @@ def check_mode(browser, mode):
             page.locator('#ve-delete-suite-cancel').click()
             expect(page.locator('#ve-delete-suite-dialog')).not_to_be_visible()
             assert len(app.evaluation.catalog()['suites']) == 1
-            page.locator('#ve-delete-suite').click()
+            page.locator('#ve-comparison [data-delete-suite]').first.click()
             page.locator('#ve-delete-suite-confirm').click()
             expect(page.locator('#message')).to_contain_text('已删除 suite')
             expect(page.locator('#ve-suite option')).to_have_count(0)
-            expect(page.locator('#ve-delete-suite')).to_be_disabled()
+            expect(page.locator('#ve-comparison [data-delete-suite]')).to_have_count(0)
             assert app.evaluation.catalog()['suites'] == []
             assert len(app.evaluation.catalog()['runs']) == 1
             for layout in run['trials']:

@@ -148,6 +148,7 @@ class ControlsTest(unittest.TestCase):
         with self.assertRaises(ValueError): self.control.stop_server()
         self.control.emergency_stop()
         self.assertFalse(self.control.active('evaluation'))
+        self.assertTrue(self.control.active('server'))
 
     def test_release_failure_prevents_spawn(self):
         self.control.start('server',self.payload)
@@ -275,6 +276,7 @@ class TrialLifecycleTest(unittest.TestCase):
     def test_inline_edits_overwrite_same_config_and_launch_it(self):
         key = self.run['id']
         config = self.run['eval_config']
+        server = self.control.jobs['server']['process']
         self.profile['evaluation'] = self.command('client', True) + ['{eval_config}']
         with patch('backend.control.socket.create_connection'), patch.object(self.control, '_spawn', wraps=self.control._spawn) as spawn:
             self.run = self.control.start_trial(dict(run_id=key, revision=self.run['revision'], eval_config_content='fps: 12\n'))
@@ -283,6 +285,41 @@ class TrialLifecycleTest(unittest.TestCase):
         self.assertEqual(Path(config).read_text(), 'fps: 12\n')
         self.assertEqual(spawn.call_args.args[1][-1], config)
         self.assertEqual(list(Path(config).parent.rglob('*.yaml')), [Path(config)])
+        self.assertIs(self.control.jobs['server']['process'], server)
+        self.assertIsNone(server.poll())
+        self.assertEqual([call.args[0] for call in spawn.call_args_list], ['evaluation'])
+
+    def test_apply_edits_restarts_current_client_and_keeps_model(self):
+        self.start()
+        old = self.control.jobs['evaluation']
+        server = self.control.jobs['server']['process']
+        old_config = Path(self.run['eval_config']).read_text()
+        with patch('backend.control.socket.create_connection'):
+            self.run = self.control.start_trial(dict(run_id=self.run['id'], revision=self.run['revision'],
+                restart_current=True, eval_config_content='fps: 15\nsteps_per_inference: 3\n'))
+        self.assertIsNotNone(old['process'].poll())
+        self.assertIsNot(self.control.jobs['evaluation'], old)
+        self.assertIs(self.control.jobs['server']['process'], server)
+        self.assertIsNone(server.poll())
+        self.assertEqual(self.run['cursor'], 0)
+        self.assertEqual(self.run['trials'][0]['status'], 'running')
+        attempt = self.run['trials'][0]['restarted_attempts'][0]
+        self.assertEqual(attempt['log_path'], str(old['log']))
+        self.assertEqual(attempt['eval_config_content'], old_config)
+        self.assertIn('steps_per_inference: 3', Path(self.run['eval_config']).read_text())
+
+    def test_emergency_during_restart_stop_prevents_new_client(self):
+        self.start()
+        original = self.control._stop_item
+        def stop(record):
+            original(record)
+            self.control.emergency_stop()
+        with patch.object(self.control, '_stop_item', side_effect=stop), patch.object(self.control, '_spawn') as spawn:
+            with self.assertRaisesRegex(ValueError, '已急停'):
+                self.control.start_trial(dict(run_id=self.run['id'], revision=self.run['revision'],
+                    restart_current=True, eval_config_content='fps: 15\n'))
+        spawn.assert_not_called()
+        self.assertFalse(self.control.active('evaluation'))
 
     def test_inference_failure_restores_same_layout_camera_and_retry(self):
         from backend.server import Application
@@ -417,8 +454,32 @@ class TrialLifecycleTest(unittest.TestCase):
         self.assertTrue(self.control.stopped)
         self.app.enable_preview.assert_not_called()
 
+    def test_explicit_finish_recovers_confirmed_emergency_stop(self):
+        self.start()
+        self.control.emergency_stop()
+        self.assertTrue(self.control.stopped)
+        saved = self.finish()
+        self.assertEqual(saved['cursor'], 1)
+        self.assertFalse(self.control.stopped)
+        self.assertFalse(self.control.emergency_requested.is_set())
+        self.assertFalse(self.control.latch.exists())
+        self.assertIn('reset', self.events.read_text().splitlines())
+
+    def test_failed_emergency_requires_manual_unlock_before_reset(self):
+        self.start()
+        stop = self.control.options['stop']
+        self.control.options['stop'] = [sys.executable, '-c', 'raise SystemExit(1)']
+        with self.assertRaises(ValueError):
+            self.control.emergency_stop()
+        self.control.options['stop'] = stop
+        with self.assertRaisesRegex(ValueError, '启动已锁定'):
+            self.finish()
+        self.assertNotIn('reset', self.control.jobs)
+        self.assertTrue(self.control.stopped)
+
     def test_exit_stops_and_saves_without_reset_or_advance(self):
         self.start();saved=self.finish(exit_run=True)
+        self.assertFalse(self.control.active('server'))
         self.assertFalse(self.control.active('evaluation'));self.assertEqual(saved['cursor'],0)
         self.assertNotIn('reset',self.events.read_text().splitlines());self.app.enable_preview.assert_not_called()
         self.assertTrue(Path(saved['result_files']['json']).is_file())
@@ -436,6 +497,8 @@ class TrialLifecycleTest(unittest.TestCase):
         self.assertEqual(self.run['cursor'], 1)
         self.assertEqual(self.run['trials'][0]['status'], 'success')
         self.assertNotIn('reset', self.events.read_text().splitlines())
+        self.control.start('server', dict(model='ACT', checkpoint=self.run['checkpoint']))
+        self.control.jobs['server']['log'].write_text('server listening on 127.0.0.1:0\n')
         self.start()
         self.assertEqual(self.run['trials'][1]['status'], 'running')
 

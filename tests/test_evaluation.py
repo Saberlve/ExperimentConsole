@@ -22,6 +22,32 @@ class EvaluationTests(unittest.TestCase):
     def run_record(self,model='ACT',suite=None):
         return self.service.create_run(dict(suite_id=(suite or self.suite)['id'],model=model,checkpoint='/ckpt/'+model,round='round-1'))
 
+    def test_select_third_trial_preserves_other_items_and_retest_history(self):
+        run = self.run_record()
+        original = copy.deepcopy(run['trials'])
+        def transition(**values):
+            nonlocal run
+            run = self.app.control.transition_trial(dict(run_id=run['id'], revision=run['revision'], **values))
+        transition(action='select', trial_index=2)
+        self.assertEqual(run['cursor'], 2)
+        self.assertEqual(run['trials'], original)
+        transition(action='start')
+        with self.assertRaisesRegex(ValueError, '先结束'):
+            transition(action='select', trial_index=4)
+        transition(action='result', result='failure', note='first attempt')
+        with self.assertRaisesRegex(ValueError, '重测'):
+            transition(action='select', trial_index=2)
+        transition(action='select', trial_index=2, retest=True)
+        self.assertEqual(run['trials'][2]['status'], 'pending')
+        self.assertEqual(run['trials'][2]['previous_results'][0]['status'], 'failure')
+        self.assertEqual(run['trials'][2]['previous_results'][0]['note'], 'first attempt')
+        for i in range(10):
+            if i != 2:
+                self.assertEqual(run['trials'][i], original[i])
+        for index in (-1, 10, True, '3'):
+            with self.subTest(index=index), self.assertRaisesRegex(ValueError, '有效'):
+                transition(action='select', trial_index=index)
+
     def test_each_round_snapshots_edited_yaml_in_its_results_folder(self):
         import hashlib
         source = self.app.output / 'eval_configs/original.yaml'
