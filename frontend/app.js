@@ -50,12 +50,14 @@ export class CameraViewer {
         const oldBitmap=this.bitmap;this.bitmap=bitmap;
         document.dispatchEvent(new CustomEvent('live-frame',{detail:{
           cameraId:camera,frameId,receivedAt:performance.now(),image:bitmap}}));
+        if(this.failed){message('相机画面已恢复');this.failed=false;}
         oldBitmap?.close();
       } catch(e) {
         failed=true;
         if(url && url!==this.url)URL.revokeObjectURL(url);
         if(bitmap && bitmap!==this.bitmap)bitmap.close();
         if(generation!==this.generation)return;
+        this.failed=true;
         document.dispatchEvent(new CustomEvent('live-error',{detail:'相机画面不可用：'+e.message}));
         message('相机画面不可用：'+e.message,true);
       } finally {
@@ -124,11 +126,41 @@ async function main(){
   new RealtimeComparison();new DatasetSelector(reference);
   new ActionReplay(status.replay);
   const evaluation=new VLAEvaluation(reference,status,message);
+  const alignmentParts=['alignment','comparison-panels','comparison-tools'].map(id=>{
+    const element=$(id),home=document.createComment(id+' home');element.before(home);
+    return {element,home};
+  });
+  const placeAlignment=()=>{
+    for(const {element,home} of alignmentParts){
+      if(location.hash==='#vla'&&evaluation.run)$('ve-alignment').append(element);
+      else home.after(element);
+    }
+  };
+  document.addEventListener('evaluation-layout-ready',placeAlignment);
+  document.addEventListener('page-changed',placeAlignment);
   new SnapshotButton(()=>evaluation.guard(()=>evaluation.captureLayout()));
-  evaluation.load().catch(e=>message(e.message,true));
+  await evaluation.load();
   if(status.mode==='reference_only'){ $('snapshot').disabled=true; $('refresh').disabled=true; $('capture-note').textContent='上传提前拍好的布局图；本模式不打开相机，不影响终端评测。'; }
   const cameras=async(isCurrent=()=>true)=>{const selected=$('reference-image').dataset.cameraId||$('camera').value;const data=await api('/api/cameras');if(!isCurrent())return;$('camera').replaceChildren(...data.map(d=>{const o=new Option(`${d.label||d.name||d.serial} · ${d.serial}${d.error?' · '+d.error:''}`,d.serial);o.disabled=!d.connected||!!d.error;return o;}));if(data.some(d=>d.serial===selected))$('camera').value=selected;camera.select($('camera').value);message('相机列表已刷新');};
   let connectionGeneration=0;
+  let cameraRelease=Promise.resolve();
+  evaluation.waitForCameraRelease=()=>cameraRelease.catch(()=>{});
+  let releasingCamera=false;
+  const releaseCamera=()=>{
+    if(releasingCamera)return cameraRelease;
+    releasingCamera=true;
+    $('idm-camera-status').textContent='正在断开后台相机连接…';
+    document.dispatchEvent(new CustomEvent('console-camera-paused'));
+    const release=cameraRelease.catch(()=>{}).then(async()=>{
+      await api('/api/evaluation/camera/release',{}, {'X-Replay-Token':status.replay.token});
+      $('idm-camera-status').textContent='相机已断开，设备已释放，可启动 VLA 或其他程序。';
+      message('相机已释放，可以启动 VLA；需要预览时点击“开启 / 刷新相机”');
+    });
+    cameraRelease=release.catch(e=>{$('idm-camera-status').textContent='断开失败：'+e.message;throw e;}).finally(()=>{releasingCamera=false;});
+    return cameraRelease;
+  };
+  action('release-camera',releaseCamera);
+  action('idm-camera-disconnect',releaseCamera);
   const connect=async(enable=false)=>{
     const generation=++connectionGeneration;
     let attempts=0;
@@ -144,16 +176,19 @@ async function main(){
         setTimeout(poll,1500);
     }};
     try {
+      await cameraRelease.catch(()=>{});
+      if(generation!==connectionGeneration)return;
       const current=await api('/api/status');
       if(generation!==connectionGeneration)return;
       if(!current.preview_enabled){
         if(!enable)return;
         await api('/api/evaluation/camera/enable',{}, {'X-Replay-Token':current.replay.token});
       }
+      $('idm-camera-status').textContent='网页相机预览已开启；使用 VLA 前请点击“断开相机连接”。';
       await poll();
     }catch(e){message(e.message,true);}
   };
-  document.addEventListener('console-camera-paused',()=>{++connectionGeneration;camera.select('');message('相机预览已关闭');});
+  document.addEventListener('console-camera-paused',()=>{++connectionGeneration;++evaluation.cameraGeneration;camera.select('');message('相机预览已关闭');});
   document.addEventListener('console-camera-enabled',()=>connect());
   $('camera').onchange=()=>camera.select($('camera').value);action('refresh',()=>connect(true));
   let pageInitialized=false;
@@ -161,7 +196,8 @@ async function main(){
     const page=button.dataset.page;
     const isVla=page==='vla';
     $('reference-controls').hidden=isVla;
-    $('comparison-panels').hidden=isVla;
+    $('comparison-panels').hidden=false;
+    $('idm-camera-controls').hidden=page!=='idm';
     $('comparison-validation').hidden=isVla;
     if(isVla){$('alpha').value=50;$('show-reference').checked=true;$('alpha').dispatchEvent(new Event('input'));}
 
@@ -176,7 +212,7 @@ async function main(){
     location.hash=page;
     document.dispatchEvent(new CustomEvent('page-changed'));
     if(pageInitialized && status.mode!=='reference_only' && (page==='wm'||(isVla&&evaluation.run?.trials[evaluation.run.cursor].status==='pending')))connect(true);
-    if(isVla&&!evaluation.run)document.dispatchEvent(new CustomEvent('console-camera-paused'));
+    if(isVla&&!evaluation.run)releaseCamera().catch(e=>message('相机释放失败：'+e.message,true));
   };
   const loadPhoto=async file=>{
     try {
@@ -212,6 +248,7 @@ async function main(){
   action('infer',async()=>{ $('result').textContent='运行中 · MOCK';try{const data=await api('/api/idm',{mode:'mock',current_image:inputs.current,target_image:inputs.target,state:JSON.parse($('state').value)});$('result').textContent=JSON.stringify(data,null,2);message('Mock 测试完成；未执行机器人动作');}catch(e){$('result').textContent='测试失败：'+e.message;throw e;}});
   action('history',async()=>{$('result').textContent=JSON.stringify(await api('/api/records'),null,2);});
   action('prepare',async()=>{const data=await api('/api/vla/prepare',{task_id:$('task').value,camera_id:$('camera').value});message(data.detail);});
+  evaluation.startSessionTracking();
   const datasets=await api('/api/datasets');for(const name of datasets)$('dataset').add(new Option(name,name));
   const initialHash=window.initialWorkbenchHash??location.hash;
   const initialPage=['wm','vla','idm'].includes(initialHash.slice(1))?initialHash.slice(1):'wm';
@@ -219,6 +256,10 @@ async function main(){
   pageInitialized=true;
   if(status.mode!=='reference_only'){
     if(initialHash==='#wm')await connect(true);
+    else if(initialPage==='vla'&&evaluation.run){
+      await evaluation.pollControl();
+      if(evaluation.run.trials[evaluation.run.cursor].status==='pending'&&!evaluation.controlState?.jobs.evaluation?.running&&!evaluation.controlState?.jobs.reset?.running)await evaluation.openCamera();
+    }
     else if(initialPage!=='vla'&&status.preview_enabled)await connect();
   }
 }

@@ -9,6 +9,7 @@ import time
 import urllib.request
 from pathlib import Path
 from urllib.parse import urlsplit
+from adapters.camera import camera_urlopen
 
 
 class CameraService:
@@ -39,7 +40,7 @@ class CameraService:
 
     def _probe(self):
         url = self.config['camera_url'].rstrip('/') + '/api/cameras'
-        with urllib.request.urlopen(url, timeout=1) as response:
+        with camera_urlopen(url, timeout=1) as response:
             payload = json.load(response)
         expected = Path(self.config['capture_root']).resolve()
         if Path(payload.get('output_dir', '')).resolve() != expected:

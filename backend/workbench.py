@@ -166,6 +166,7 @@ def main():
         pass
     finally:
         server.server_close()
+        app.browser_session.close()
         app.control.close()
         app.replay.close()
         if app.camera_service:

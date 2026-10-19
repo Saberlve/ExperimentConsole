@@ -12,14 +12,15 @@ from urllib.error import URLError, HTTPError
 from urllib.request import urlopen
 
 def app_camera_probe(url):
-    return urlopen(url.rstrip("/") + "/api/cameras", timeout=1)
+    return camera_urlopen(url.rstrip("/") + "/api/cameras", timeout=1)
 
 from urllib.parse import parse_qs, urlsplit, quote
 from PIL import Image, UnidentifiedImageError
-from adapters.camera import CameraAdapter, FirstFrameAdapter, utc
+from adapters.camera import CameraAdapter, FirstFrameAdapter, utc, camera_urlopen
 from adapters.dataset import DatasetAdapter
 from adapters.models import IDMAdapter, VLAAdapter
 from adapters.camera_service import CameraService
+from backend.browser_session import BrowserSession
 from adapters.video import first_frame, MAX_VIDEO_BYTES
 from backend.snapshot import SnapshotService
 from backend.replay import ReplayService
@@ -68,6 +69,7 @@ class Application:
         self.preview_enabled = config.get('camera_preview_on_start', True) and config['mode'] != 'reference_only'
         self.camera_service = (CameraService(config, ROOT) if config['mode'] == 'legacy_http'
                                and config.get('camera_autostart', True) else None)
+        self.browser_session = BrowserSession(self)
 
     def preview_status(self):
         return {'enabled': self.preview_enabled,
@@ -96,6 +98,8 @@ class Application:
                         raise ValueError('无法确认相机服务已退出，请检查相机服务终端') from exc
                 except ConnectionRefusedError:
                     pass
+                except TimeoutError as exc:
+                    raise ValueError('释放相机时检查相机服务超时：'+self.config['camera_url']+'；设备尚未确认释放，评测客户端不会启动') from exc
                 else:
                     raise ValueError('相机端口仍有外部服务运行，请在对应终端关闭它后重新释放相机')
             return self.preview_status()
@@ -235,6 +239,8 @@ def _make_console_handler(app):
                 self.reply(app.replay.status())
             elif path == '/api/evaluation/control':
                 self.reply(app.control.status())
+            elif path == '/api/evaluation/session':
+                self.reply(app.browser_session.status())
             elif path == '/api/evaluation/camera':
                 self.reply(app.preview_status())
             elif path == '/api/evaluation/catalog':
@@ -346,6 +352,10 @@ def _make_console_handler(app):
                     self.reply(app.control.unlock())
                 elif path == '/api/evaluation/camera/enable':
                     self.reply(app.enable_preview())
+                elif path == '/api/evaluation/session/heartbeat':
+                    self.reply(app.browser_session.heartbeat(payload))
+                elif path == '/api/evaluation/session/close':
+                    self.reply(app.browser_session.heartbeat(payload, closing=True))
                 elif path == '/api/evaluation/camera/release':
                     self.reply(app.release_preview())
                 elif path == '/api/evaluation/suites':

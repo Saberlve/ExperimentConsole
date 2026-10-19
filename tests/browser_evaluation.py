@@ -27,6 +27,8 @@ def check_mode(browser, mode):
         page.on('pageerror', lambda error: errors.append(str(error)))
         try:
             page.goto(f'http://127.0.0.1:{server.server_port}/#vla')
+            expect(page.locator('#ve-load')).to_have_text('继续选中的评测')
+            assert page.locator('#ve-resume').bounding_box()['y'] < page.locator('#ve-setup').bounding_box()['y']
             expect(page.locator('#ve-edit-suite')).to_be_enabled()
             # A fresh page must restore the persisted draft and revision for editing.
             page.reload()
@@ -51,6 +53,13 @@ def check_mode(browser, mode):
             page.locator('#ve-manual-checkpoint').fill('terminal-checkpoint')
             page.locator('#ve-round').fill('manual-round')
             page.locator('#ve-create-run').click()
+            expect(page.locator('#ve-alignment #comparison-panels')).to_be_visible()
+            expect(page.locator('#ve-alignment #overlay-live')).to_be_visible()
+            expect(page.locator('#ve-alignment #alpha')).to_be_visible()
+            if mode == 'demo':
+                page.wait_for_function("document.querySelector('#overlay-live').dataset.frameId")
+            page.locator('#ve-manual-controls').evaluate('(el)=>el.open=true')
+            expect(page.locator('#ve-next-action')).to_contain_text('终端')
             expect(page.locator('#ve-manual-start')).to_be_enabled()
             page.locator('#ve-manual-start').click()
             expect(page.locator('#ve-manual-result')).to_be_enabled()
@@ -63,7 +72,10 @@ def check_mode(browser, mode):
             page.locator('#ve-run-exit').click()
             expect(page.locator('#ve-current')).to_be_hidden()
             page.reload()
+            page.locator('#ve-setup').evaluate('(el)=>el.open=false')
+            expect(page.locator('#ve-load')).to_be_visible()
             page.locator('#ve-load').click()
+            page.locator('#ve-manual-controls').evaluate('(el)=>el.open=true')
             expect(page.locator('#ve-next')).to_be_enabled()
             page.locator('#ve-next').click()
             expect(page.locator('#ve-manual-start')).to_be_enabled()

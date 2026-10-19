@@ -4,8 +4,17 @@ import json
 import threading
 import time
 import urllib.request
+from urllib.parse import urlsplit
 from datetime import datetime, timezone
 from PIL import Image, ImageDraw
+
+
+def camera_urlopen(request, timeout):
+    url = request.full_url if isinstance(request, urllib.request.Request) else request
+    if urlsplit(url).hostname in ('localhost', '127.0.0.1', '::1'):
+        # Device services on this machine must never go through an HTTP proxy.
+        return urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=timeout)
+    return urllib.request.urlopen(request, timeout=timeout)
 
 
 def utc():
@@ -20,7 +29,7 @@ class CameraAdapter:
     def request(self, path, post=False):
         request = urllib.request.Request(self.config['camera_url'].rstrip('/') + path,
                                          method='POST' if post else 'GET')
-        return urllib.request.urlopen(request, timeout=8)
+        return camera_urlopen(request, timeout=8)
 
     def cameras(self):
         if self.config['mode'] == 'reference_only':

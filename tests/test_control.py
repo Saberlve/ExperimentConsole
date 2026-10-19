@@ -25,6 +25,7 @@ class ControlsTest(unittest.TestCase):
 
     def test_owned_process_duplicate_and_stop(self):
         self.control.start('server',self.payload)
+        self.control.jobs['server']['log'].write_text('server listening on 127.0.0.1:0\n')
         self.assertTrue(self.control.active('server'))
         with self.assertRaises(ValueError): self.control.start('server',self.payload)
         self.control.stop_server()
@@ -42,9 +43,26 @@ class ControlsTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'停止未确认'): self.control.emergency_stop()
         self.assertTrue(self.control.stopped)
 
+    def test_latch_write_failure_still_stops_client_and_controller(self):
+        self.control.start('server', self.payload)
+        self.control.jobs['server']['log'].write_text('server listening on 127.0.0.1:0\n')
+        with patch('backend.control.socket.create_connection'):
+            self.control.start('evaluation', self.payload)
+        with patch.object(Path, 'write_text', side_effect=OSError('disk full')):
+            with patch('backend.control.subprocess.run', return_value=SimpleNamespace(
+                    returncode=0, stdout='confirmed stop', stderr='')) as stop:
+                with self.assertRaisesRegex(ValueError, 'disk full'):
+                    self.control.emergency_stop()
+        self.assertFalse(self.control.active('evaluation'))
+        self.assertEqual(stop.call_count, 2)
+        self.assertTrue(self.control.stopped)
+        self.assertTrue(self.control.emergency_requested.is_set())
+        self.assertFalse(self.control.stopping.is_set())
+
     def test_eval_requires_matching_server_and_revision(self):
         with self.assertRaises(ValueError): self.control.start('evaluation',self.payload)
         self.control.start('server',self.payload)
+        self.control.jobs['server']['log'].write_text('server listening on 127.0.0.1:0\n')
         with patch('backend.control.socket.create_connection'):
             with self.assertRaises(ValueError): self.control.start('evaluation',dict(self.payload,revision=1))
             self.app.release_preview.assert_not_called()
@@ -57,6 +75,7 @@ class ControlsTest(unittest.TestCase):
 
     def test_release_failure_prevents_spawn(self):
         self.control.start('server',self.payload)
+        self.control.jobs['server']['log'].write_text('server listening on 127.0.0.1:0\n')
         self.app.release_preview.side_effect=ValueError('camera busy')
         with patch('backend.control.socket.create_connection'):
             with self.assertRaisesRegex(ValueError,'camera busy'): self.control.start('evaluation',self.payload)
@@ -66,6 +85,7 @@ class ControlsTest(unittest.TestCase):
         import hashlib
         self.app.evaluation.read.return_value['eval_config_sha256'] = hashlib.sha256(self.config.read_bytes()).hexdigest()
         self.control.start('server', self.payload)
+        self.control.jobs['server']['log'].write_text('server listening on 127.0.0.1:0\n')
         self.config.write_text('modified after round was created')
         with patch('backend.control.socket.create_connection'):
             with self.assertRaisesRegex(ValueError, '本轮保存的配置已被修改'):
@@ -76,6 +96,37 @@ class ControlsTest(unittest.TestCase):
         with self.assertRaises(ValueError): self.control.start('server',dict(self.payload,model='shell'))
         self.control.enabled=False
         with self.assertRaises(ValueError): self.control.start('server',self.payload)
+
+    def test_loading_model_blocks_evaluation_before_camera_release(self):
+        self.control.start('server', self.payload)
+        self.assertFalse(self.control.status()['jobs']['server']['ready'])
+        with patch('backend.control.socket.create_connection') as connect:
+            with self.assertRaisesRegex(ValueError, '尚未出现 listening on'):
+                self.control.start('evaluation', self.payload)
+        connect.assert_not_called()
+        self.app.release_preview.assert_not_called()
+        self.assertFalse(self.control.active('evaluation'))
+
+    def test_readiness_survives_log_tail_rotation_and_clears_on_exit(self):
+        self.control.start('server', self.payload)
+        log = self.control.jobs['server']['log']
+        log.write_text('server listen')
+        self.assertFalse(self.control.server_ready())
+        with log.open('a') as stream:stream.write('ing on 127.0.0.1:0\n' + 'later output\n' * 1000)
+        self.assertTrue(self.control.status()['jobs']['server']['ready'])
+        log.write_text('later output only')
+        self.assertTrue(self.control.server_ready())
+        self.control.stop_server()
+        self.assertFalse(self.control.server_ready())
+
+    def test_policy_port_timeout_identifies_failed_stage(self):
+        self.control.start('server', self.payload)
+        self.control.jobs['server']['log'].write_text('server listening on 127.0.0.1:0\n')
+        with patch('backend.control.socket.create_connection', side_effect=TimeoutError('timed out')):
+            with self.assertRaisesRegex(ValueError, '连接模型服务 127.0.0.1:0 超时'):
+                self.control.start('evaluation', self.payload)
+        self.app.release_preview.assert_not_called()
+        self.assertFalse(self.control.active('evaluation'))
 
 
 class TrialLifecycleTest(unittest.TestCase):
@@ -105,6 +156,7 @@ class TrialLifecycleTest(unittest.TestCase):
         weight=self.root/'checkpoint';weight.write_text('fixture')
         self.run=self.app.evaluation.create_run(dict(suite_id=suite['id'],model='ACT',checkpoint=str(weight),round='r1',eval_config_content='fps: 15\n'))
         self.control.start('server',dict(model='ACT',checkpoint=str(weight)))
+        self.control.jobs['server']['log'].write_text('server listening on 127.0.0.1:0\n')
 
     def start(self):
         with patch('backend.control.socket.create_connection'):

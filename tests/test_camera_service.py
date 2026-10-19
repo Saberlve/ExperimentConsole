@@ -1,11 +1,22 @@
 """Subprocess ownership tests. No real cameras or launchers are started."""
 import unittest
+import tempfile
 from pathlib import Path
 from unittest.mock import Mock, patch
 from adapters.camera_service import CameraService
 
 
 class CameraServiceTests(unittest.TestCase):
+    def test_release_probe_timeout_names_camera_stage(self):
+        from backend.server import Application
+        with tempfile.TemporaryDirectory() as directory:
+            app = Application(dict(mode='legacy_http', output_dir=directory, datasets={},
+                                   camera_url='http://127.0.0.1:8766', camera_autostart=False))
+            with patch('backend.server.app_camera_probe', side_effect=TimeoutError('timed out')):
+                with self.assertRaisesRegex(ValueError, '释放相机时检查相机服务超时'):
+                    app.release_preview()
+            self.assertFalse(app.preview_enabled)
+
     def service(self):
         return CameraService({'camera_url': 'http://127.0.0.1:8766',
                               'capture_root': '/tmp/console-test-frames'}, Path('/tmp/console'))

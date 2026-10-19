@@ -1,6 +1,7 @@
 """Optional, server-configured process controls. Never accepts shell commands from HTTP."""
 import os
 import hashlib
+import re
 from pathlib import Path
 import signal
 import socket
@@ -41,6 +42,8 @@ class ProcessControl:
                     tail = f.read().decode(errors='replace')
                 jobs[kind] = dict(model=job['model'], checkpoint=job['checkpoint'], run_id=job.get('run_id'),
                     running=p.poll() is None, exit_code=p.poll(), log=tail)
+                if kind == 'server':
+                    jobs[kind]['ready'] = self.server_ready()
             models = {k:dict(checkpoint=v.get('checkpoint', ''), eval_config=v.get('eval_config', ''),
                             eval_configs=[str(p.resolve()) for p in sorted(Path(v['eval_config']).expanduser().parent.glob('*'))
                                           if p.is_file() and p.suffix.lower() in ('.yaml', '.yml')] if v.get('eval_config') else [],
@@ -50,6 +53,18 @@ class ProcessControl:
                     (self.app.output / 'eval_configs' / model).glob('*.yaml')) if p.is_file())
             return dict(enabled=self.enabled, models=models, jobs=jobs, stopped=self.stopped,
                         stopping=self.stopping.is_set(), stop_detail=self.stop_detail)
+
+    def server_ready(self):
+        job = self.jobs.get('server')
+        if not job or not self.active('server'):
+            return False
+        if not job.get('listening_seen'):
+            with job['log'].open('rb') as stream:
+                stream.seek(max(0, job.get('readiness_offset', 0) - 256))
+                data = stream.read()
+                job['readiness_offset'] = stream.tell()
+            job['listening_seen'] = bool(re.search(rb'\blistening on\b', data, re.I))
+        return bool(job.get('listening_seen'))
 
     def _profile(self, model):
         if not self.enabled:
@@ -75,6 +90,8 @@ class ProcessControl:
                 raise ValueError('急停已锁定，请先人工检查并解除启动锁定')
             if self.active(kind) or self.active('evaluation') or self.active('reset'):
                 raise ValueError('已有进程运行，请先停止')
+            if kind == 'evaluation' and self.active('server') and not self.server_ready():
+                raise ValueError('模型服务仍在加载：尚未出现 listening on 日志，请等待服务就绪')
             checkpoint = str(Path(payload.get('checkpoint') or profile.get('checkpoint', '')).expanduser().resolve())
             if not Path(checkpoint).is_file():
                 raise ValueError('请选择存在的模型 checkpoint 文件')
@@ -89,8 +106,14 @@ class ProcessControl:
                 server = self.jobs.get('server', {})
                 if not self.active('server') or server.get('model') != payload['model'] or server.get('checkpoint') != checkpoint:
                     raise ValueError('请先启动同一模型与 checkpoint 的服务')
-                with socket.create_connection(('127.0.0.1', self.options['port']), timeout=1):
-                    pass
+                address = ('127.0.0.1', self.options['port'])
+                try:
+                    with socket.create_connection(address, timeout=3):
+                        pass
+                except TimeoutError as exc:
+                    raise ValueError(f'连接模型服务 {address[0]}:{address[1]} 超时（3 秒）；客户端尚未启动，请检查模型服务进程和端口') from exc
+                except OSError as exc:
+                    raise ValueError(f'连接模型服务 {address[0]}:{address[1]} 失败；客户端尚未启动：{exc}') from exc
                 config = Path(payload.get('eval_config') or profile.get('eval_config', '')).expanduser().resolve()
                 if not config.is_file():
                     raise ValueError('评测 YAML 不存在')
@@ -162,6 +185,8 @@ class ProcessControl:
                 raise ValueError('此模型尚未配置复位命令')
             if self.active('reset') or self.active('evaluation'):
                 raise ValueError('已有复位或评测进程运行')
+            if self.active('server') and not self.server_ready():
+                raise ValueError('模型服务仍在加载：尚未出现 listening on 日志，请等待服务就绪')
             trial = record['trials'][record['cursor']]
             if trial['status'] != 'pending':
                 raise ValueError('当前布局已开始或已记录，请切换下一张')
@@ -312,10 +337,14 @@ class ProcessControl:
         self.emergency_requested.set()
         self.stopping.set()  # Never waits behind model loading / config validation.
         with self.stop_lock:
-            self.directory.mkdir(parents=True, exist_ok=True)
-            self.latch.write_text('Operator stop: explicit unlock required\n')
             self.stopped = True
             errors = []
+            try:
+                self.directory.mkdir(parents=True, exist_ok=True)
+                self.latch.write_text('Operator stop: explicit unlock required\n')
+            except Exception as exc:
+                # Keep the in-memory lock and stop motion even if persistence fails.
+                errors.append('停止锁定标记保存失败：' + str(exc))
             try:
                 self._kill('evaluation')
                 self._kill('reset')
