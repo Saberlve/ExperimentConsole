@@ -19,6 +19,24 @@ class EvaluationTests(unittest.TestCase):
         image=self.app.upload(png())
         self.suite=self.service.create_suite(dict(task='egg_pick',name='v1',criteria='放入容器',layouts=[dict(url=image['url'],label=f'layout {i+1}') for i in range(10)]))
 
+    def test_generated_round_keeps_each_model_profile_and_does_not_follow_base_edits(self):
+        import yaml
+        for model, profile in (('ACT', 'xarm7_eef10'), ('pi05', 'xarm7_eef10'),
+                               ('N0', 'xarm7_eef_n0vtla'), ('FTP1', 'xarm7_eef_ftp1')):
+            with self.subTest(model=model):
+                folder = self.app.output / 'eval_configs'
+                folder.mkdir(exist_ok=True)
+                base = folder / (model + '_base.yaml')
+                content = 'deployment_profile: ' + profile + '\naction_space: eef10\nfps: 15\n'
+                base.write_text(content)
+                record = self.service.create_run(dict(suite_id=self.suite['id'], model=model,
+                    checkpoint='/ckpt/' + model, round='profile-test', eval_config=str(base)))
+                saved = Path(record['eval_config'])
+                self.assertNotEqual(saved, base)
+                self.assertEqual(saved.read_text(), content)
+                base.write_text('deployment_profile: null\n')
+                self.assertEqual(yaml.safe_load(saved.read_text())['deployment_profile'], profile)
+
     def run_record(self,model='ACT',suite=None):
         return self.service.create_run(dict(suite_id=(suite or self.suite)['id'],model=model,checkpoint='/ckpt/'+model,round='round-1'))
 

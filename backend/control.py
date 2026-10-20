@@ -99,17 +99,50 @@ class ProcessControl:
             checkpoint = str(Path(payload.get('checkpoint') or profile.get('checkpoint', '')).expanduser().resolve())
             if not Path(checkpoint).is_file():
                 raise ValueError('请选择存在的模型 checkpoint 文件')
+            values = dict(checkpoint=checkpoint)
+            config = None
+            server_uses_run_config = any('{eval_config}' in token for token in
+                                         profile.get('server', []) + profile.get('validate_checkpoint', []))
+            uses_run_config = any('{eval_config}' in token for token in
+                                  profile.get(kind, []) + profile.get('validate_checkpoint', []))
+            if uses_run_config:
+                if not payload.get('run_id'):
+                    raise ValueError('请先保存并加载评测轮次，模型服务使用该轮次的评测 YAML')
+                selected = self.app.evaluation.read('runs', payload['run_id'])
+                if (selected['model'].lower() != payload['model'].lower()
+                        or str(Path(selected['checkpoint']).resolve()) != checkpoint):
+                    raise ValueError('当前评测轮次的模型或 checkpoint 不一致')
+                if kind == 'server' and 'eval_config_content' in payload:
+                    if selected.get('revision') != payload.get('revision'):
+                        raise ValueError('评测配置已更新，请刷新后再启动服务')
+                    selected = self.app.evaluation.update_run_config(selected, payload['eval_config_content'])
+                config = Path(selected.get('eval_config', '')).expanduser().resolve()
+                if not config.is_file():
+                    raise ValueError('当前轮次的评测 YAML 不存在')
+                requested = payload.get('eval_config')
+                if requested and Path(requested).expanduser().resolve() != config:
+                    raise ValueError('请选择当前轮次已保存的评测 YAML')
+                import yaml
+                config_value = yaml.safe_load(config.read_text())
+                if server_uses_run_config and (not isinstance(config_value, dict) or 'deployment_profile' not in config_value or config_value.get('action_space') not in ('eef10', 'joint')):
+                    raise ValueError('当前轮次配置需要 deployment_profile 和 action_space（eef10 / joint），请补充后重启模型服务')
+                values['eval_config'] = str(config)
             if profile.get('validate_checkpoint'):
-                result = subprocess.run([x.format(checkpoint=checkpoint) for x in profile['validate_checkpoint']], cwd=profile['cwd'], capture_output=True, text=True, timeout=10)
+                result = subprocess.run([x.format(**values) for x in profile['validate_checkpoint']], cwd=profile['cwd'], capture_output=True, text=True, timeout=10)
                 if result.returncode:
                     raise ValueError(result.stderr[-2000:] or result.stdout[-2000:])
-            values = dict(checkpoint=checkpoint)
             if kind == 'evaluation':
                 if not profile.get('evaluation'):
                     raise ValueError(profile.get('unavailable') or '未配置评测入口')
                 server = self.jobs.get('server', {})
                 if not self.active('server') or server.get('model') != payload['model'] or server.get('checkpoint') != checkpoint:
                     raise ValueError('请先启动同一模型与 checkpoint 的服务')
+                if server.get('eval_config'):
+                    import yaml
+                    current_config = config or Path(payload.get('eval_config', '')).expanduser().resolve()
+                    current = yaml.safe_load(current_config.read_text())
+                    if str(current_config) != server['eval_config'] or current.get('deployment_profile') != server.get('deployment_profile') or current.get('action_space') != server.get('action_space'):
+                        raise ValueError('评测 YAML、deployment_profile 或 action_space 已修改，请重启模型服务使两端使用同一份配置')
                 address = ('127.0.0.1', self.options['port'])
                 try:
                     with socket.create_connection(address, timeout=3):
@@ -148,6 +181,9 @@ class ProcessControl:
             command = [x.format(**values) for x in profile[kind]]
             folder = self.app.output / 'vla_evaluations/runs' / run['id'] if kind == 'evaluation' and run.get('id') else None
             self._spawn(kind, command, profile['cwd'], profile.get('env', {}), payload['model'], checkpoint, folder)
+            if kind == 'server' and uses_run_config:
+                self.jobs[kind].update(run_id=payload['run_id'], eval_config=str(config),
+                                      deployment_profile=config_value['deployment_profile'], action_space=config_value['action_space'])
             if kind == 'evaluation':
                 self.jobs[kind].update(run_id=payload.get('run_id'), trial_index=run['cursor'])
                 job = self.jobs[kind]

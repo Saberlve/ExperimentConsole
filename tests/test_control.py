@@ -23,6 +23,55 @@ class ControlsTest(unittest.TestCase):
         self.addCleanup(self.control.close)
         self.payload=dict(model='ACT',checkpoint=str(self.ckpt),eval_config=str(self.config),run_id='test',revision=2)
 
+    def test_server_and_checkpoint_check_use_current_saved_round_yaml(self):
+        for model, profile in (('ACT', 'xarm7_eef10'), ('pi05', 'xarm7_eef10'),
+                               ('N0', 'xarm7_eef_n0vtla'), ('FTP1', 'xarm7_eef_ftp1')):
+            with self.subTest(model=model):
+                self.config.write_text('deployment_profile: ' + profile + '\naction_space: eef10\n')
+                self.profile['server'] = [sys.executable, '-c', 'import time; time.sleep(120)', '{eval_config}']
+                self.profile['validate_checkpoint'] = [sys.executable, '-c',
+                    'import pathlib,sys; assert pathlib.Path(sys.argv[1]).is_file()', '{eval_config}']
+                self.control.options['models'][model] = self.profile
+                self.app.evaluation.read.return_value['model'] = model
+                payload = dict(self.payload, model=model)
+                self.control.start('server', payload)
+                job = self.control.jobs['server']
+                self.assertEqual(job['process'].args[-1], str(self.config.resolve()))
+                self.assertEqual(job['eval_config'], str(self.config.resolve()))
+                self.assertEqual(job['deployment_profile'], profile)
+                self.control.stop_server()
+
+    def test_server_rejects_a_base_path_instead_of_the_saved_round(self):
+        self.config.write_text('deployment_profile: xarm7_eef10\naction_space: eef10\n')
+        self.profile['server'] += ['{eval_config}']
+        other = self.root / 'base.yaml'
+        other.write_text(self.config.read_text())
+        with self.assertRaisesRegex(ValueError, '当前轮次已保存'):
+            self.control.start('server', dict(self.payload, eval_config=str(other)))
+        self.assertFalse(self.control.active('server'))
+
+    def test_profile_edit_requires_server_restart_before_client_connection(self):
+        self.config.write_text('deployment_profile: xarm7_eef10\naction_space: eef10\n')
+        self.profile['server'] += ['{eval_config}']
+        self.control.start('server', self.payload)
+        self.control.jobs['server']['log'].write_text('server listening on 127.0.0.1:0\n')
+        self.config.write_text('deployment_profile: xarm7_eef_n0vtla\naction_space: eef10\n')
+        with patch('backend.control.socket.create_connection') as connect:
+            with self.assertRaisesRegex(ValueError, '重启模型服务'):
+                self.control.start('evaluation', self.payload)
+        connect.assert_not_called()
+
+    def test_action_space_change_requires_server_restart(self):
+        self.config.write_text("deployment_profile: xarm7_eef10\naction_space: eef10\n")
+        self.profile["server"] += ["{eval_config}"]
+        self.control.start("server", self.payload)
+        self.control.jobs["server"]["log"].write_text("server listening on 127.0.0.1:0\n")
+        self.config.write_text("deployment_profile: xarm7_eef10\naction_space: joint\n")
+        with patch("backend.control.socket.create_connection") as connect:
+            with self.assertRaisesRegex(ValueError, "重启模型服务"):
+                self.control.start("evaluation", self.payload)
+        connect.assert_not_called()
+
     def test_owned_process_duplicate_and_stop(self):
         self.control.start('server',self.payload)
         self.control.jobs['server']['log'].write_text('server listening on 127.0.0.1:0\n')
