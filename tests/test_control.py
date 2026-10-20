@@ -1,4 +1,5 @@
 import sys
+import socket
 import tempfile
 import threading
 import unittest
@@ -78,6 +79,33 @@ class ControlsTest(unittest.TestCase):
         self.assertTrue(self.control.active('server'))
         with self.assertRaises(ValueError): self.control.start('server',self.payload)
         self.control.stop_server()
+        self.assertFalse(self.control.active('server'))
+
+    def test_server_port_probe_accepts_closed_connections_in_time_wait(self):
+        with socket.socket() as listener:
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            listener.bind(('127.0.0.1', 0))
+            listener.listen(1)
+            port = listener.getsockname()[1]
+            with socket.create_connection(('127.0.0.1', port)) as client:
+                peer, _ = listener.accept()
+                peer.close()  # Server closes first, leaving server-side TIME_WAIT.
+                self.assertEqual(client.recv(1), b'')
+        with socket.socket() as old_probe:
+            with self.assertRaises(OSError):
+                old_probe.bind(('0.0.0.0', port))
+        self.control.options['port'] = port
+        self.control.start('server', self.payload)
+        self.assertTrue(self.control.active('server'))
+
+    def test_server_port_probe_still_rejects_a_live_external_listener(self):
+        with socket.socket() as listener:
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            listener.bind(('127.0.0.1', 0))
+            listener.listen(1)
+            self.control.options['port'] = listener.getsockname()[1]
+            with self.assertRaisesRegex(ValueError, '端口已占用'):
+                self.control.start('server', self.payload)
         self.assertFalse(self.control.active('server'))
 
     def test_stop_persists_latch_and_does_not_start_robot(self):
@@ -206,6 +234,122 @@ class ControlsTest(unittest.TestCase):
         with patch('backend.control.socket.create_connection'):
             with self.assertRaisesRegex(ValueError,'camera busy'): self.control.start('evaluation',self.payload)
         self.assertFalse(self.control.active('evaluation'))
+
+    def test_preflight_runs_once_per_server_session_and_round(self):
+        self.profile['validate_checkpoint'] = ['checkpoint-preflight']
+        result = SimpleNamespace(returncode=0, stdout='', stderr='')
+        def stop_client():
+            self.control.jobs['evaluation']['intentional_stop'] = True
+            self.control._kill('evaluation')
+        with patch('backend.control.subprocess.run', return_value=result) as validate, \
+             patch('backend.control.socket.create_connection'):
+            self.control.start('server', self.payload)
+            self.control.jobs['server']['log'].write_text('server listening on 127.0.0.1:0\n')
+            self.control.start('evaluation', self.payload)
+            stop_client()
+            self.config.write_text('fps: 10\n')
+            self.control.start('evaluation', self.payload)
+            self.assertEqual(validate.call_count, 2)  # checkpoint + first round preflight
+            stop_client()
+            self.control.start('evaluation', dict(self.payload, run_id='another-round'))
+            self.assertEqual(validate.call_count, 3)
+            stop_client()
+            self.control.stop_server()
+            self.control.start('server', self.payload)
+            self.control.jobs['server']['log'].write_text('server listening on 127.0.0.1:0\n')
+            self.control.start('evaluation', self.payload)
+            self.assertEqual(validate.call_count, 5)
+
+    def test_failed_preflight_is_retried_without_releasing_cameras(self):
+        self.control.start('server', self.payload)
+        self.control.jobs['server']['log'].write_text('server listening on 127.0.0.1:0\n')
+        with patch('backend.control.socket.create_connection'), \
+             patch('backend.control.subprocess.run', side_effect=[
+                 SimpleNamespace(returncode=1, stdout='', stderr='invalid config'),
+                 SimpleNamespace(returncode=0, stdout='', stderr='')]) as validate:
+            with self.assertRaisesRegex(ValueError, 'invalid config'):
+                self.control.start('evaluation', self.payload)
+            self.app.release_preview.assert_not_called()
+            self.control.start('evaluation', self.payload)
+            self.assertEqual(validate.call_count, 2)
+
+    def test_item_stop_waits_for_retained_worker_before_controller_confirmation(self):
+        events = []
+        self.control.jobs['evaluation'] = dict(run_id='test', trial_index=0)
+        record = dict(id='test', cursor=0)
+        try:
+            with patch.object(self.control, 'active', return_value=False), \
+                 patch.object(self.control, '_kill', side_effect=lambda kind: events.append(('kill', kind))), \
+                 patch.object(self.control, '_device_request', side_effect=lambda action: events.append(('devices', action))), \
+                 patch('backend.control.subprocess.run', side_effect=lambda *a, **kw: (
+                     events.append(('controller', 'stop')) or SimpleNamespace(returncode=0, stdout='confirmed', stderr=''))):
+                self.control._stop_item(record)
+            self.assertEqual(events, [('kill', 'evaluation'), ('devices', 'stop'), ('controller', 'stop')])
+        finally:
+            self.control.jobs.pop('evaluation')
+
+    def test_worker_stop_failure_still_kills_worker_and_stops_controller(self):
+        events = []
+        self.control.jobs['evaluation'] = dict(run_id='test', trial_index=0)
+        try:
+            with patch.object(self.control, 'active', return_value=False), \
+                 patch.object(self.control, '_kill', side_effect=lambda kind: events.append(('kill', kind))), \
+                 patch.object(self.control, '_device_request', side_effect=TimeoutError('worker blocked')), \
+                 patch('backend.control.subprocess.run', side_effect=lambda *a, **kw: (
+                     events.append(('controller', 'stop')) or SimpleNamespace(returncode=0, stdout='confirmed', stderr=''))):
+                with self.assertRaisesRegex(ValueError, 'worker blocked'):
+                    self.control._stop_item(dict(id='test', cursor=0))
+            self.assertEqual(events, [('kill', 'evaluation'), ('kill', 'devices'), ('controller', 'stop')])
+            self.assertTrue(self.control.stopped)
+        finally:
+            self.control.jobs.pop('evaluation')
+
+    def test_model_close_releases_retained_devices_before_server(self):
+        events = []
+        with patch.object(self.control, '_close_devices', side_effect=lambda: events.append('devices')), \
+             patch.object(self.control, '_kill', side_effect=lambda _: events.append('server')):
+            self.control.stop_server()
+        self.assertEqual(events, ['devices', 'server'])
+
+    def test_device_owner_starts_lazily_reuses_process_and_closes_with_model(self):
+        # Real IPC process, with no evaluate/reset request: no hardware is
+        # constructed. Trial/model commands remain the fixture sleep processes.
+        runtime = Path(__file__).resolve().parents[3] / 'tools/experiment_console_runtime.py'
+        self.config.write_text('action_space: eef10\n')
+        self.profile['device_session'] = [sys.executable, str(runtime), 'device-session',
+            '--device-socket', '{device_socket}', '--owner-pid', '{owner_pid}', '--server-pid', '{server_pid}']
+        self.profile['device_control'] = [sys.executable, str(runtime), 'device-control',
+            '--device-socket', '{device_socket}', '--request', '{request}']
+        self.app.evaluation.read.return_value['id'] = 'test'
+        self.control.start('server', self.payload)
+        self.assertNotIn('devices', self.control.jobs)
+        self.control.jobs['server']['log'].write_text('server listening on 127.0.0.1:0\n')
+        with patch('backend.control.socket.create_connection'), \
+             patch.object(self.control, '_spawn', wraps=self.control._spawn) as spawn:
+            self.control.start('evaluation', self.payload)
+            worker = self.control.jobs['devices']['process']
+            address = Path(self.control.jobs['devices']['socket'])
+            self.assertTrue(address.exists())
+            self.assertTrue(self.control.active('devices'))
+            calls = [call for call in spawn.call_args_list if call.args[0] == 'evaluation']
+            self.assertEqual(calls[0].args[3]['VLARMORY_DEVICE_SOCKET'], str(address))
+            self.control._stop_item(dict(id='test', cursor=0))
+            self.assertTrue(self.control.active('devices'))
+            self.control.start('evaluation', self.payload)
+            self.assertIs(self.control.jobs['devices']['process'], worker)
+            self.control._stop_item(dict(id='test', cursor=0))
+        self.control.stop_server()
+        self.assertIsNotNone(worker.poll())
+        self.assertFalse(address.exists())
+        self.assertFalse(address.parent.exists())
+
+    def test_emergency_kills_device_worker_before_controller_stop(self):
+        events = []
+        with patch.object(self.control, '_kill', side_effect=lambda kind: events.append(('kill', kind))), \
+             patch('backend.control.subprocess.run', side_effect=lambda *a, **kw: (
+                 events.append(('controller', 'stop')) or SimpleNamespace(returncode=0, stdout='confirmed', stderr=''))):
+            self.control.emergency_stop()
+        self.assertLess(events.index(('kill', 'devices')), events.index(('controller', 'stop')))
 
     def test_eval_accepts_modified_round_config(self):
         import hashlib

@@ -195,6 +195,7 @@ async function main(){
   for(const button of document.querySelectorAll('[data-page]'))button.onclick=()=>{
     const page=button.dataset.page;
     const isVla=page==='vla';
+    $('console-stage').dataset.page=page;
     $('reference-controls').hidden=isVla;
     $('comparison-panels').hidden=false;
     $('idm-camera-controls').hidden=page!=='idm';

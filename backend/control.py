@@ -5,6 +5,7 @@ from pathlib import Path
 import signal
 import socket
 import subprocess
+import tempfile
 import threading
 import time
 
@@ -86,6 +87,72 @@ class ProcessControl:
                 stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.STDOUT, start_new_session=True)
         self.jobs[kind] = dict(process=p, log=log, model=model, checkpoint=checkpoint)
 
+    def _device_environment(self, profile, record):
+        """Start the private device owner lazily, on the first EEF evaluation."""
+        env = dict(profile.get('env', {}))
+        if not profile.get('device_session'):
+            return env
+        import yaml
+        if yaml.safe_load(Path(record['eval_config']).read_text()).get('action_space') != 'eef10':
+            return env
+        if not self.active('devices'):
+            old = self.jobs.get('devices')
+            if old:
+                self._close_devices()
+            server = self.jobs['server']
+            directory = Path(tempfile.mkdtemp(prefix='vlarmory-devices-'))
+            address = str(directory / 'session.sock')
+            values = dict(device_socket=address, owner_pid=os.getpid(), server_pid=server['process'].pid)
+            try:
+                self._spawn('devices', [x.format(**values) for x in profile['device_session']],
+                            profile['cwd'], env, record['model'], record['checkpoint'])
+            except BaseException:
+                directory.rmdir()
+                raise
+            self.jobs['devices'].update(socket=address, directory=directory,
+                control=profile['device_control'], cwd=profile['cwd'], run_id=record['id'],
+                server_pid=server['process'].pid)
+        device = self.jobs['devices']
+        if device['server_pid'] != self.jobs['server']['process'].pid:
+            raise ValueError('设备连接属于另一个模型会话，请先退出原评测会话')
+        deadline = time.monotonic() + 8
+        while not Path(device['socket']).exists():
+            if not self.active('devices') or time.monotonic() >= deadline:
+                self._close_devices()
+                raise ValueError('评测设备会话启动失败，请查看 devices 日志')
+            if self.emergency_requested.is_set():
+                self._close_devices()
+                raise ValueError('已急停，不会启动评测')
+            time.sleep(.05)
+        device['run_id'] = record['id']
+        env['VLARMORY_DEVICE_SOCKET'] = device['socket']
+        return env
+
+    def _device_request(self, action):
+        job = self.jobs.get('devices')
+        if not job or not self.active('devices'):
+            return
+        values = dict(device_socket=job['socket'], request=action)
+        result = subprocess.run([x.format(**values) for x in job['control']], cwd=job['cwd'],
+                                capture_output=True, text=True, timeout=12)
+        if result.returncode:
+            raise RuntimeError(result.stderr[-2000:] or result.stdout[-2000:])
+
+    def _close_devices(self):
+        job = self.jobs.get('devices')
+        if not job:
+            return
+        try:
+            self._device_request('shutdown')
+            job['process'].wait(timeout=3)
+        finally:
+            self._kill('devices')
+            Path(job['socket']).unlink(missing_ok=True)
+            try:
+                job['directory'].rmdir()
+            except FileNotFoundError:
+                pass
+
     def start(self, kind, payload):
         # Same lock order as camera enable/transition. Emergency stop sets its event first.
         with self.app.evaluation.lock, self.lock:
@@ -127,7 +194,9 @@ class ProcessControl:
                 if server_uses_run_config and (not isinstance(config_value, dict) or 'deployment_profile' not in config_value or config_value.get('action_space') not in ('eef10', 'joint')):
                     raise ValueError('当前轮次配置需要 deployment_profile 和 action_space（eef10 / joint），请补充后重启模型服务')
                 values['eval_config'] = str(config)
-            if profile.get('validate_checkpoint'):
+            # Checkpoint preflight belongs to the model-server session, not
+            # each layout/client launched against that same server.
+            if kind == 'server' and profile.get('validate_checkpoint'):
                 result = subprocess.run([x.format(**values) for x in profile['validate_checkpoint']], cwd=profile['cwd'], capture_output=True, text=True, timeout=10)
                 if result.returncode:
                     raise ValueError(result.stderr[-2000:] or result.stdout[-2000:])
@@ -154,11 +223,6 @@ class ProcessControl:
                 config = Path(payload.get('eval_config') or profile.get('eval_config', '')).expanduser().resolve()
                 if not config.is_file():
                     raise ValueError('评测 YAML 不存在')
-                # Parent integration validates config semantics without importing robot code.
-                check = [x.format(eval_config=str(config), checkpoint=checkpoint) for x in profile['validate']]
-                result = subprocess.run(check, cwd=profile['cwd'], capture_output=True, text=True, timeout=10)
-                if result.returncode:
-                    raise ValueError(result.stderr[-2000:] or result.stdout[-2000:])
                 run = self.app.evaluation.read('runs', payload.get('run_id'))
                 if run['model'].lower() != payload['model'].lower() or str(Path(run['checkpoint']).resolve()) != checkpoint:
                     raise ValueError('当前评测轮次的模型或 checkpoint 不一致')
@@ -166,12 +230,25 @@ class ProcessControl:
                     raise ValueError('评测 YAML 与已保存轮次不一致，请新建正确轮次')
                 if run['revision'] != payload.get('revision') or run['trials'][run['cursor']]['status'] != 'running':
                     raise ValueError('请先加载当前轮次并标记当前布局开始')
+                # A new server job starts a fresh validation session. YAML is
+                # still parsed by each client so edits take effect immediately.
+                validation_key = (payload['run_id'], str(config))
+                validated = server.setdefault('validated_evaluations', set())
+                if validation_key not in validated:
+                    check = [x.format(eval_config=str(config), checkpoint=checkpoint) for x in profile['validate']]
+                    result = subprocess.run(check, cwd=profile['cwd'], capture_output=True, text=True, timeout=10)
+                    if result.returncode:
+                        raise ValueError(result.stderr[-2000:] or result.stdout[-2000:])
+                    validated.add(validation_key)
                 self.app.release_preview()
                 values['eval_config'] = str(config)
             else:
                 if self.active('server'):
                     raise ValueError('请先停止当前模型服务')
                 with socket.socket() as probe:
+                    # Match asyncio's Unix server socket: closed connections in
+                    # TIME_WAIT may be reused, but a live listener still blocks.
+                    probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                     try:
                         probe.bind(('0.0.0.0', self.options['port']))
                     except OSError as exc:
@@ -180,7 +257,10 @@ class ProcessControl:
                 raise ValueError('急停正在执行')
             command = [x.format(**values) for x in profile[kind]]
             folder = self.app.output / 'vla_evaluations/runs' / run['id'] if kind == 'evaluation' and run.get('id') else None
-            self._spawn(kind, command, profile['cwd'], profile.get('env', {}), payload['model'], checkpoint, folder)
+            env = self._device_environment(profile, run) if kind == 'evaluation' else profile.get('env', {})
+            if self.stopping.is_set() or self.emergency_requested.is_set():
+                raise ValueError('已急停，不会启动评测')
+            self._spawn(kind, command, profile['cwd'], env, payload['model'], checkpoint, folder)
             if kind == 'server' and uses_run_config:
                 self.jobs[kind].update(run_id=payload['run_id'], eval_config=str(config),
                                       deployment_profile=config_value['deployment_profile'], action_space=config_value['action_space'])
@@ -348,10 +428,18 @@ class ProcessControl:
         try:
             with self.stop_lock:
                 self._kill('evaluation')
+                device_error = None
+                try:
+                    self._device_request('stop')
+                except Exception as exc:
+                    self._kill('devices')
+                    device_error = exc
                 result = subprocess.run(self.options['stop'], capture_output=True, text=True, timeout=8)
                 if result.returncode:
                     raise RuntimeError(result.stderr[-1500:] or result.stdout[-1500:])
                 self.stop_detail = result.stdout.strip()
+                if device_error:
+                    raise RuntimeError('评测设备停止或 RGB 释放未确认：' + str(device_error))
         except Exception as exc:
             self.stop_confirmed = False
             self.directory.mkdir(parents=True, exist_ok=True)
@@ -376,7 +464,10 @@ class ProcessControl:
                 raise ValueError('启动已锁定，不能自动复位')
             command = [x.format(eval_config=record['eval_config']) for x in profile['reset']]
             folder = self.app.output / 'vla_evaluations/runs' / record['id']
-            self._spawn('reset', command, profile['cwd'], profile.get('env', {}), record['model'], record['checkpoint'], folder)
+            env = self._device_environment(profile, record)
+            if self.emergency_requested.is_set():
+                raise ValueError('已急停，不会启动复位')
+            self._spawn('reset', command, profile['cwd'], env, record['model'], record['checkpoint'], folder)
             self.jobs['reset'].update(run_id=record['id'], trial_index=record['cursor'])
             process = self.jobs['reset']['process']
             record['trials'][record['cursor']]['reset_log_path'] = str(self.jobs['reset']['log'])
@@ -483,7 +574,10 @@ class ProcessControl:
         with self.lock:
             if self.active('evaluation') or self.active('reset'):
                 raise ValueError('请先停止评测')
-            self._kill('server')
+            try:
+                self._close_devices()
+            finally:
+                self._kill('server')
             return self.status()
 
     def emergency_stop(self):
@@ -506,6 +600,9 @@ class ProcessControl:
             try:
                 self._kill('evaluation')
                 self._kill('reset')
+                # Kill the owned worker before confirming controller state=4:
+                # a pending reset must never re-enable motion after confirmation.
+                self._kill('devices')
             except Exception as exc:
                 errors.append(str(exc))
             try:
@@ -518,6 +615,7 @@ class ProcessControl:
             with self.lock:
                 self._kill('evaluation')
                 self._kill('reset')
+                self._kill('devices')
             # A start may have been past its last check when stop was requested.
             # Confirm controller stop again after the final owned-process kill.
             try:
@@ -550,4 +648,7 @@ class ProcessControl:
         if self.active('evaluation') or self.active('reset'):
             self.emergency_stop()
         with self.lock:
-            self._kill('server')
+            try:
+                self._close_devices()
+            finally:
+                self._kill('server')

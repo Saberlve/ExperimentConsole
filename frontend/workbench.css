@@ -13,3 +13,15 @@
 @media(forced-colors:active){#vla-evaluation #ve-config-content{color:CanvasText;-webkit-text-fill-color:CanvasText;background:Canvas}#ve-config-highlight{visibility:hidden}}
 
 #ve-config-state:empty{display:none}
+
+@media(min-width:901px){
+  #console-stage[data-page="vla"]>main>.controls{
+    position:sticky;
+    top:84px;
+    align-self:start;
+    max-height:calc(100dvh - 148px);
+    overflow-y:auto;
+    overscroll-behavior-y:contain;
+    scrollbar-gutter:stable;
+  }
+}
