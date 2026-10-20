@@ -134,6 +134,7 @@ def make_workbench_handler(app, manager=None):
 
 def main():
     import os
+    import signal
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', default=str(CONSOLE / 'config/default.json'))
     parser.add_argument('--host', default='127.0.0.1', choices=['127.0.0.1', 'localhost'])
@@ -160,6 +161,9 @@ def main():
     print(f'Experiment Console: http://{args.host}:{server.server_port}', flush=True)
     if app.camera_service and app.preview_enabled:
         app.camera_service.start()
+    def terminate(_signum, _frame):
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, terminate)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -32,6 +32,7 @@ def check_mode(browser, mode):
             expect(page.locator('#ve-setup')).to_be_visible()
             assert page.locator('#ve-resume').bounding_box()['y'] < page.locator('#ve-setup').bounding_box()['y']
             expect(page.locator('#ve-edit-suite')).to_be_enabled()
+            assert page.locator('#ve-suite-management').bounding_box()['y'] < page.locator('#ve-resume').bounding_box()['y']
             # A fresh page must restore the persisted draft and revision for editing.
             page.reload()
             page.locator('#ve-edit-suite').click()
@@ -111,8 +112,9 @@ def check_mode(browser, mode):
             # Suite management remains visible when new-round setup is collapsed.
             page.locator('#ve-setup').evaluate('(el)=>el.open=false')
             expect(page.locator('#ve-suite-management')).to_be_visible()
-            expect(page.locator('#ve-comparison [data-delete-suite]').first).to_be_visible()
-            page.locator('#ve-comparison [data-delete-suite]').first.click()
+            page.locator('#ve-suite-management').evaluate('(el)=>el.open=true')
+            expect(page.locator('#ve-delete-suite')).to_be_visible()
+            page.locator('#ve-delete-suite').click()
             expect(page.locator('#ve-delete-suite-dialog')).to_be_visible()
             expect(page.locator('#ve-delete-suite-description')).to_contain_text('resume_suite')
             expect(page.locator('#ve-delete-suite-cancel')).to_be_focused()
@@ -121,11 +123,11 @@ def check_mode(browser, mode):
             page.locator('#ve-delete-suite-cancel').click()
             expect(page.locator('#ve-delete-suite-dialog')).not_to_be_visible()
             assert len(app.evaluation.catalog()['suites']) == 1
-            page.locator('#ve-comparison [data-delete-suite]').first.click()
+            page.locator('#ve-delete-suite').click()
             page.locator('#ve-delete-suite-confirm').click()
             expect(page.locator('#message')).to_contain_text('已删除 suite')
             expect(page.locator('#ve-suite option')).to_have_count(0)
-            expect(page.locator('#ve-comparison [data-delete-suite]')).to_have_count(0)
+            expect(page.locator('#ve-delete-suite')).to_be_disabled()
             assert app.evaluation.catalog()['suites'] == []
             assert len(app.evaluation.catalog()['runs']) == 1
             for layout in run['trials']:
@@ -135,6 +137,24 @@ def check_mode(browser, mode):
             expect(page.locator('#ve-task-filter')).to_have_value('egg')
             page.locator('#ve-load').click()
             expect(page.locator('#ve-progress')).to_contain_text('全部判定完成')
+            # Delete the selected round with cancel and confirmation; reload must
+            # not restore a stale browser session for the deleted record.
+            page.locator('#ve-comparison [data-delete-run]').click()
+            expect(page.locator('#ve-delete-run-dialog')).to_be_visible()
+            expect(page.locator('#ve-delete-run-description')).to_contain_text('manual-round')
+            expect(page.locator('#ve-delete-run-cancel')).to_be_focused()
+            expect(page.locator('#ve-delete-run-dialog #ve-emergency')).to_be_visible()
+            page.locator('#ve-delete-run-cancel').click()
+            assert len(app.evaluation.catalog()['runs']) == 1
+            page.locator('#ve-comparison [data-delete-run]').click()
+            page.locator('#ve-delete-run-confirm').click()
+            expect(page.locator('#ve-current')).to_be_hidden()
+            expect(page.locator('#ve-comparison [data-delete-run]')).to_have_count(0)
+            expect(page.locator('#ve-load')).to_be_disabled()
+            assert app.evaluation.catalog()['runs'] == []
+            page.reload()
+            expect(page.locator('#ve-current')).to_be_hidden()
+            expect(page.locator('#ve-load')).to_be_disabled()
             assert not app.control.jobs
             assert not errors, errors
             print(mode + ': suite reload/edit, confirmed deletion with history preserved and manual resume passed')

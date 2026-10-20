@@ -1,6 +1,7 @@
 """Subprocess ownership tests. No real cameras or launchers are started."""
 import unittest
 import tempfile
+import threading
 from pathlib import Path
 from unittest.mock import Mock, patch
 from adapters.camera_service import CameraService
@@ -18,8 +19,10 @@ class CameraServiceTests(unittest.TestCase):
             self.assertFalse(app.preview_enabled)
 
     def service(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
         return CameraService({'camera_url': 'http://127.0.0.1:8766',
-                              'capture_root': '/tmp/console-test-frames'}, Path('/tmp/console'))
+                              'capture_root': '/tmp/console-test-frames'}, Path(directory.name))
 
     def test_existing_service_is_reused_and_never_stopped(self):
         service = self.service()
@@ -33,6 +36,7 @@ class CameraServiceTests(unittest.TestCase):
         service = self.service()
         process = Mock()
         process.poll.return_value = None
+        process.wait.side_effect = lambda **kwargs: setattr(process.poll, 'return_value', 0)
         with patch.object(service, '_probe', side_effect=[OSError('offline'), True]), \
              patch('subprocess.Popen', return_value=process) as popen:
             service.start(); service.thread.join(2)
@@ -72,3 +76,22 @@ class CameraServiceTests(unittest.TestCase):
             self.assertEqual(service.state, 'error')
             popen.assert_not_called()
             service.close()
+
+    def test_release_during_connection_cannot_launch_camera_afterwards(self):
+        service = self.service()
+        probing, proceed = threading.Event(), threading.Event()
+        def probe():
+            probing.set()
+            proceed.wait(2)
+            raise OSError('offline')
+        with patch.object(service, '_probe', side_effect=probe), patch('subprocess.Popen') as popen:
+            service.start()
+            self.assertTrue(probing.wait(2))
+            closer = threading.Thread(target=service.close)
+            closer.start()
+            self.assertTrue(service.stop.wait(2))
+            proceed.set()
+            closer.join(2)
+            self.assertFalse(closer.is_alive())
+            self.assertFalse(service.thread.is_alive())
+            popen.assert_not_called()

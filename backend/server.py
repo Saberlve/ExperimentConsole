@@ -368,6 +368,8 @@ def _make_console_handler(app):
                     self.reply(app.evaluation.load_source(payload.get('source_id')))
                 elif path == '/api/evaluation/runs':
                     self.reply(app.evaluation.create_run(payload))
+                elif path == '/api/evaluation/runs/delete':
+                    self.reply(app.evaluation.delete_run(payload))
                 elif path == '/api/evaluation/start-trial':
                     self.reply(app.control.start_trial(payload))
                 elif path == '/api/evaluation/finish-trial':

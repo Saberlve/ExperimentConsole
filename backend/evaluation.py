@@ -127,6 +127,8 @@ class EvaluationService:
         record = json.loads((self.root / kind / key / 'record.json').read_text())
         if kind == 'suites' and record.get('deleted_at'):
             raise ValueError('suite 已删除，请刷新列表')
+        if kind == 'runs' and record.get('deleted_at'):
+            raise ValueError('评测记录已删除，请刷新列表')
         return record
 
     def write(self, kind, record):
@@ -148,7 +150,7 @@ class EvaluationService:
             runs = [self.summary(json.loads(p.read_text())) for p in sorted((self.root / 'runs').glob('*/record.json'))]
             return {'suites': sorted((s for s in suites if not s.get('deleted_at')), key=lambda x:x['created_at'], reverse=True),
                     'suites_root': str((self.root / 'suites').resolve()),
-                    'runs': sorted(runs, key=lambda x:x['created_at'], reverse=True)}
+                    'runs': sorted((r for r in runs if not r.get('deleted_at')), key=lambda x:x['created_at'], reverse=True)}
 
     def create_suite(self, payload):
         task = text(payload.get('task'), '任务', 256)
@@ -246,6 +248,26 @@ class EvaluationService:
             else:
                 shutil.rmtree(self.root / 'suites' / record['id'])
             return dict(deleted=True, suite_id=record['id'])
+
+    def delete_run(self, payload):
+        control = self.app.control
+        # Use the same lock order as trial startup and failure recovery.
+        with control.workflow_lock, self.lock, control.lock:
+            if payload.get('confirmed') is not True:
+                raise ValueError('请再次确认删除评测记录')
+            record = self.read('runs', payload.get('run_id'))
+            if type(payload.get('revision')) is not int or payload['revision'] != record['revision']:
+                raise ValueError('评测记录已更新，请刷新列表后重新确认删除')
+            if any(t['status'] == 'running' for t in record['trials']):
+                raise ValueError('请先结束本轮正在进行的评测，再删除记录')
+            owned = [kind for kind, job in control.jobs.items() if job.get('run_id') == record['id']]
+            if any(control.active(kind) for kind in owned):
+                raise ValueError('请先停止本轮关联的模型、评测或复位进程，再删除记录')
+            record.update(deleted_at=utc(), revision=record['revision'] + 1)
+            self.write('runs', record)
+            for kind in owned:
+                del control.jobs[kind]
+            return dict(deleted=True, run_id=record['id'])
 
     def create_run(self, payload):
         with self.lock:

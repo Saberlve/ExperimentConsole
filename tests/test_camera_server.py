@@ -123,3 +123,14 @@ class CameraServerTests(unittest.TestCase):
         with patch('backend.camera_server.discover_devices',return_value=devices),patch('backend.camera_server.CameraFeed',side_effect=[first,second]):
             with self.assertRaises(RuntimeError):open_feeds(640,480,30)
         first.stop.assert_called_once();second.stop.assert_called_once()
+
+    def test_interrupt_during_startup_releases_already_opened_feeds(self):
+        devices = [Device(serial, 'FAKE', 'test') for serial in CAMERAS]
+        first, second = Mock(), Mock()
+        second.connect.side_effect = KeyboardInterrupt()
+        with patch('backend.camera_server.discover_devices', return_value=devices), \
+             patch('backend.camera_server.CameraFeed', side_effect=[first, second]):
+            with self.assertRaises(KeyboardInterrupt):
+                open_feeds(640, 480, 30)
+        first.stop.assert_called_once()
+        second.stop.assert_called_once()

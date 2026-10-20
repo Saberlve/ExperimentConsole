@@ -40,6 +40,38 @@ class EvaluationTests(unittest.TestCase):
     def run_record(self,model='ACT',suite=None):
         return self.service.create_run(dict(suite_id=(suite or self.suite)['id'],model=model,checkpoint='/ckpt/'+model,round='round-1'))
 
+    def test_delete_run_removes_only_selected_record_and_survives_restart(self):
+        run, other = self.run_record(), self.run_record('pi05')
+        result = self.service.delete_run(dict(run_id=run['id'], revision=run['revision'], confirmed=True))
+        self.assertTrue(result['deleted'])
+        restarted = Application(self.config).evaluation
+        self.assertEqual([r['id'] for r in restarted.catalog()['runs']], [other['id']])
+        self.assertEqual(restarted.read('suites', self.suite['id'])['id'], self.suite['id'])
+        self.assertTrue(all(self.app.asset(t['url']).is_file() for t in other['trials']))
+        with self.assertRaisesRegex(ValueError, '评测记录已删除'):
+            restarted.read('runs', run['id'])
+
+    def test_delete_run_requires_confirmation_and_current_revision(self):
+        run = self.run_record()
+        for extra in (dict(revision=run['revision']), dict(revision=True, confirmed=True),
+                      dict(revision=run['revision']+1, confirmed=True)):
+            with self.subTest(extra=extra), self.assertRaises(ValueError):
+                self.service.delete_run(dict(run_id=run['id'], **extra))
+        self.assertEqual(len(self.service.catalog()['runs']), 1)
+
+    def test_delete_run_rejects_running_trial_and_associated_process(self):
+        run = self.run_record()
+        payload = dict(run_id=run['id'], revision=run['revision'], confirmed=True)
+        process = Mock()
+        process.poll.return_value = None
+        self.app.control.jobs['evaluation'] = dict(run_id=run['id'], process=process)
+        with self.assertRaisesRegex(ValueError, '先停止'):
+            self.service.delete_run(payload)
+        self.app.control.jobs.clear()
+        run = self.service.transition(dict(run_id=run['id'], revision=run['revision'], action='start'))
+        with self.assertRaisesRegex(ValueError, '先结束'):
+            self.service.delete_run(dict(payload, revision=run['revision']))
+
     def test_select_third_trial_preserves_other_items_and_retest_history(self):
         run = self.run_record()
         original = copy.deepcopy(run['trials'])

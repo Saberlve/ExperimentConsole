@@ -6,3 +6,4 @@ output/
 *.npy
 config/local.json
 WM_fisrtFrame/
+.camera-owner-token

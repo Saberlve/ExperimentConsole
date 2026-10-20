@@ -41,7 +41,7 @@ def main():
                     expect(page.locator('#message')).to_contain_text('相机已释放')
                     assert not app.preview_enabled
                     assert release.call_count >= 2
-                    expect(page.locator('[aria-current=step]')).to_have_text('1 选择测试集与模型')
+                    expect(page.locator('[aria-current=step]')).to_have_text('1 布局测试集管理')
                 page.locator('[data-page=idm]').click()
                 with patch.object(app, 'release_preview', side_effect=ValueError('外部相机服务仍在运行')):
                     page.locator('#release-camera').click()

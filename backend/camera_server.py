@@ -2,10 +2,14 @@
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import fcntl
+import hashlib
+import hmac
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import os
 from pathlib import Path
 import re
+import signal
 from urllib.parse import parse_qs, urlsplit
 from adapters.realsense import CameraFeed, discover_devices
 
@@ -67,7 +71,7 @@ class PairCapture:
         return {'number': number, 'paths': [str(path.resolve()) for path in created]}
 
 
-def make_handler(feeds, output):
+def make_handler(feeds, output, owner_token=''):
     capture = PairCapture(feeds, output)
 
     class Handler(BaseHTTPRequestHandler):
@@ -96,6 +100,7 @@ def make_handler(feeds, output):
                 parsed = urlsplit(self.path)
                 if parsed.path in ('/', '/health', '/api/cameras', '/api/devices'):
                     self.send_json(200, {'service': 'experiment_console.camera', 'devices': self.devices(),
+                        'owner_id': hashlib.sha256(owner_token.encode()).hexdigest() if owner_token else None,
                         'output_dir': str(output), 'next_number': next_capture_number(output)})
                 elif parsed.path == '/stream':
                     serial = parse_qs(parsed.query).get('serial', [''])[0]
@@ -124,12 +129,20 @@ def make_handler(feeds, output):
                 pass
 
         def do_POST(self):
-            if urlsplit(self.path).path != '/api/capture':
-                self.send_json(404, {'error': '接口不存在'})
-                return
             origin = self.headers.get('Origin')
             if origin and urlsplit(origin).netloc != self.headers.get('Host'):
                 self.send_json(403, {'error': '跨源请求被拒绝'})
+                return
+            path = urlsplit(self.path).path
+            if path == '/api/shutdown':
+                if not owner_token or not hmac.compare_digest(self.headers.get('Authorization', ''), 'Bearer ' + owner_token):
+                    self.send_json(403, {'error': '此相机服务不归当前控制台管理'})
+                    return
+                self.send_json(200, {'stopping': True})
+                self.server.shutdown()
+                return
+            if path != '/api/capture':
+                self.send_json(404, {'error': '接口不存在'})
                 return
             try:
                 result = capture.capture()
@@ -153,7 +166,7 @@ def open_feeds(width, height, fps):
             feeds[serial] = feed
             feed.connect()
         return feeds
-    except Exception:
+    except BaseException:
         for feed in feeds.values():
             feed.stop()
         raise
@@ -172,10 +185,14 @@ def main():
         parser.error('分辨率/帧率必须为正数，端口必须在 1～65535')
     output = args.output_dir.expanduser().resolve()
     output.mkdir(parents=True, exist_ok=True)
+    def terminate(_signum, _frame):
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, terminate)
     feeds, server = {}, None
     try:
         feeds = open_feeds(args.width, args.height, args.fps)
-        server = ThreadingHTTPServer((args.host, args.port), make_handler(feeds, output))
+        server = ThreadingHTTPServer((args.host, args.port), make_handler(feeds, output,
+            os.environ.get('CONSOLE_CAMERA_OWNER_TOKEN', '')))
         server.daemon_threads = True
         print(f'Console camera service: http://{args.host}:{args.port} -> {output}', flush=True)
         server.serve_forever()
@@ -184,10 +201,11 @@ def main():
     except Exception as exc:
         raise SystemExit(f'相机服务启动失败：{exc}') from exc
     finally:
-        if server:
-            server.server_close()
         for feed in feeds.values():
             feed.stop()
+        # The port must stay bound until device cleanup has completed.
+        if server:
+            server.server_close()
 
 
 if __name__ == '__main__':
