@@ -50,12 +50,30 @@ class ProcessControl:
                 if kind == 'server':
                     jobs[kind]['ready'] = self.server_ready()
             models = {k:dict(checkpoint=v.get('checkpoint', ''), eval_config=v.get('eval_config', ''),
-                            eval_configs=[str(p.resolve()) for p in sorted(Path(v['eval_config']).expanduser().parent.glob('*'))
-                                          if p.is_file() and p.suffix.lower() in ('.yaml', '.yml')] if v.get('eval_config') else [],
+                            eval_configs=[str(p.resolve()) for p in sorted(Path(v.get('eval_config_root') or Path(v.get('eval_config', '')).expanduser().parent).expanduser().rglob('*'))
+                                          if p.is_file() and p.suffix.lower() in ('.yaml', '.yml')] if v.get('eval_config_root') or v.get('eval_config') else [],
                             unavailable=v.get('unavailable', '')) for k,v in self.options.get('models', {}).items()}
             for model, profile in models.items():
                 profile['eval_configs'].extend(str(p.resolve()) for p in sorted(
-                    (self.app.output / 'eval_configs' / model).glob('*.yaml')) if p.is_file())
+                    (self.app.output / 'eval_configs' / model).rglob('*.yaml')) if p.is_file())
+                source = self.options['models'][model]
+                root = Path(source.get('eval_config_root') or Path(source.get('eval_config') or '.').parent).expanduser().resolve()
+                profile['eval_config_root'] = str(root)
+                profile['eval_configs'] = sorted(set(profile['eval_configs']))
+                profile['eval_config_catalog'] = []
+                for value in profile['eval_configs']:
+                    path = Path(value)
+                    relative = path.relative_to(root) if path.is_relative_to(root) else None
+                    parts = relative.parts if relative else ()
+                    # Model/task directories are isolated; legacy shared templates remain available.
+                    owner = next((name for name in models if parts and name.lower() == parts[0].lower()), None)
+                    if owner and owner != model:
+                        continue
+                    profile['eval_config_catalog'].append(dict(
+                        path=value, directory=str(relative.parent) if relative else '已保存配置',
+                        task=parts[1] if owner and len(parts) >= 3 else '',
+                        model=owner or model))
+                profile['eval_configs'] = [entry['path'] for entry in profile['eval_config_catalog']]
             return dict(enabled=self.enabled, models=models, jobs=jobs, stopped=self.stopped,
                         stopping=self.stopping.is_set(), stop_detail=self.stop_detail)
 

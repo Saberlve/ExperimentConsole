@@ -37,7 +37,7 @@ export class VLAEvaluation {
 <dialog id="ve-delete-run-dialog" aria-labelledby="ve-delete-run-title"><h3 id="ve-delete-run-title">确认删除评测记录？</h3><p id="ve-delete-run-description"></p><p>该轮次将从评测列表移除，无法继续或修改其结果。布局测试集与其他轮次保留。进行中的评测须先结束。</p><div class="ve-actions"><button id="ve-delete-run-cancel">取消</button><button id="ve-delete-run-confirm">确认删除</button></div></dialog>
 <details id="ve-setup" class="ve-step" open><summary>2 · 或：新建评测轮次（新模型 / 新 checkpoint）</summary><p>已有测试集直接选择；首次使用可在左侧拍摄并保存布局测试集。选好模型、检查点和 YAML 后，点击“保存配置并新建评测轮次”。</p>
 <p id="ve-checkpoint-root"></p><button id="ve-checkpoint-refresh">刷新检查点列表</button>
-<div class="ve-grid"><label>模型名称<select id="ve-model"><option value="pi05">π05</option><option value="ACT">ACT</option><option value="FTP1">FTP1</option><option value="N0">N0</option></select></label><label>检查点<select id="ve-checkpoint"><option value="">请选择检查点</option></select></label><label>轮次名称<input id="ve-round" list="ve-round-options" placeholder="输入轮次名称，例如 round-1" maxlength="256"><datalist id="ve-round-options"></datalist></label><label>评测配置<select id="ve-config"><option value="">请选择评测 YAML</option></select></label></div>
+<div class="ve-grid"><label>模型名称<select id="ve-model"><option value="pi05">π05</option><option value="ACT">ACT</option><option value="FTP1">FTP1</option><option value="N0">N0</option></select></label><label>检查点<select id="ve-checkpoint"><option value="">请选择检查点</option></select></label><label>轮次名称<input id="ve-round" list="ve-round-options" placeholder="输入轮次名称，例如 round-1" maxlength="256"><datalist id="ve-round-options"></datalist></label><label>评测配置（按任务和模型自动匹配）<select id="ve-config"><option value="">请选择评测 YAML</option></select></label></div>
 <label>手动填写 checkpoint（终端评测 / 离线记录）<input id="ve-manual-checkpoint" placeholder="填写 checkpoint 路径或标识"></label>
 <details id="ve-config-editor"><summary id="ve-config-editor-title">查看 / 修改评测 YAML（可选）</summary><p id="ve-config-path"></p><div class="ve-code-editor"><div class="ve-code-gutter" aria-hidden="true"><pre id="ve-config-lines">1</pre></div><div class="ve-code-body"><pre id="ve-config-highlight" aria-hidden="true"></pre><textarea id="ve-config-content" aria-label="评测 YAML 编辑器" spellcheck="false" autocapitalize="off" autocomplete="off" wrap="off" disabled></textarea></div></div><p id="ve-config-state">请选择评测配置。</p><p>执行步数和机器人参数可修改，下一次启动 / 重试时保存并生效，无需重启模型服务。deployment_profile 或 action_space 修改后需重启模型服务。single_task 和 fps 必须与训练配置一致；action_chunk_size 须匹配模型输出长度，或填 null 自动读取。</p></details>
 <button id="ve-create-run" class="primary">保存配置并新建评测轮次</button>
@@ -401,23 +401,32 @@ export class VLAEvaluation {
     $('ve-round-options').replaceChildren(new Option(fresh+'（新轮次）',fresh),...names.map(n=>new Option(n+'（已有名称）',n)));
     if(!current.trim())$('ve-round').value=fresh;
   }
-  controlDefaults(){
-    const p=this.controlState?.models[$('ve-model').value];
-    const paths=[...new Set([p?.eval_config,...(p?.eval_configs||[]),...(this.catalog?.runs||[]).filter(r=>r.model===$('ve-model').value).map(r=>r.eval_config)].filter(Boolean))];
-    const baseDirectory=p?.eval_config?.slice(0,p.eval_config.lastIndexOf('/')+1);
-    const isBase=path=>!!baseDirectory&&path.slice(0,path.lastIndexOf('/')+1)===baseDirectory;
-    paths.sort((a,b)=>Number(isBase(b))-Number(isBase(a)));
-    $('ve-config').replaceChildren(new Option('请选择评测 YAML',''),...paths.map(path=>{
-      const base=isBase(path),option=new Option((base?'BASE · ':'')+path.split('/').pop(),path);
-      if(base)option.classList.add('ve-base-config');
-      return option;
-    }));
-    if(p){this.setChoice('ve-checkpoint',p.checkpoint);this.setChoice('ve-config',p.eval_config);}
+  controlDefaults({resetCheckpoint=true}={}){
+    const model=$('ve-model').value,p=this.controlState?.models[model];
+    const taskName=$('ve-task-filter').value.trim().toLowerCase().replace(/[\s-]+/g,'_');
+    const task=({charge_press:'charger_press',charge_insert:'charger_insert'})[taskName]||taskName;
+    const paths=[...new Set([p?.eval_config,...(p?.eval_configs||[]),...(this.catalog?.runs||[]).filter(r=>r.model===model).map(r=>r.eval_config)].filter(Boolean))];
+    const entries=new Map((p?.eval_config_catalog||[]).map(entry=>[entry.path,entry]));
+    const root=p?.eval_config_root||p?.eval_config?.slice(0,p.eval_config.lastIndexOf('/'));
+    const directory=path=>entries.get(path)?.directory||(root&&path.startsWith(root+'/')?path.slice(root.length+1,path.lastIndexOf('/'))||'.':'已保存配置');
+    const groups=new Map();
+    for(const path of paths.sort()){
+      const label=directory(path);
+      if(!groups.has(label)){const group=document.createElement('optgroup');group.label=label==='.'?'通用配置':label.replaceAll('/',' / ');groups.set(label,group);}
+      groups.get(label).append(new Option(path.split('/').pop(),path));
+    }
+    $('ve-config').replaceChildren(new Option(taskName?'未找到当前任务的配置，请手动选择':'请选择评测 YAML',''),...groups.values());
+    const matched=paths.find(path=>entries.get(path)?.task===task&&entries.get(path)?.model===model&&path.split('/').pop()===`${model}_${task}.yaml`)
+      ||paths.find(path=>path.endsWith(`/${model}/${task}/${model}_${task}.yaml`));
+    // Existing rounds always retain their own saved YAML.
+    const saved=this.run?.model===model&&this.run?.task===$('ve-task-filter').value?this.run.eval_config:null;
+    this.setChoice('ve-config',saved||matched||(!taskName?p?.eval_config:''));
+    if(p&&resetCheckpoint)this.setChoice('ve-checkpoint',p.checkpoint);
     this.roundOptions();this.previewConfig();
   }
   async pollControl(){
     clearTimeout(this.controlTimer);
-    try{const c=await this.api('/api/evaluation/control');const first=!this.controlState;this.controlState=c;if(first&&!$('ve-checkpoint').value)this.controlDefaults();
+    try{const c=await this.api('/api/evaluation/control');const first=!this.controlState;this.controlState=c;if(first)this.controlDefaults({resetCheckpoint:!$('ve-checkpoint').value});
       const server=c.jobs.server,ev=c.jobs.evaluation,reset=c.jobs.reset,p=c.models[$('ve-model').value];
       if(this.hadModel&&!server?.running&&!ev?.running&&!reset?.running){
         this.run=null;this.clearSession();$('ve-current').hidden=true;$('ve-setup').open=true;
@@ -586,7 +595,7 @@ export class VLAEvaluation {
     $('ve-suite-images-title').textContent=s?`布局图片（${s.layouts.length} 张）`:'布局图片';
     $('ve-suite-preview').innerHTML=s?'<p>已保存的布局图片，点击可加载为相机对齐参考图。</p><div class="ve-layout-gallery">'+s.layouts.map((t,i)=>`<button type="button" data-layout-index="${i}"><img loading="lazy" src="${esc(t.url)}" alt="${esc(t.label)}"><span>${i+1}. ${esc(t.label)}</span></button>`).join('')+'</div>':'';
   }
-  renderTask(suite){const task=$('ve-task-filter').value,previous=suite||$('ve-suite').value;const suites=this.catalog.suites.filter(s=>s.task===task);$('ve-suite').replaceChildren(...suites.map(s=>new Option(`${s.name} · ${s.layouts.length} 张 · ${s.id.slice(0,8)}`,s.id)));if(suites.some(s=>s.id===previous))$('ve-suite').value=previous;else{const primary=suites.find(s=>s.id===task||s.name===task);if(primary)$('ve-suite').value=primary.id;}this.suiteInfo();const runs=this.catalog.runs.filter(r=>r.task===task);$('ve-runs').replaceChildren(...runs.map(r=>new Option(`${r.model} · ${r.suite_name} · ${r.round} · 已判定 ${r.metrics.completed}/${r.metrics.total} · 待测 ${r.metrics.pending} · ${r.checkpoint.split('/').pop()}`,r.id)));if(this.run&&runs.some(r=>r.id===this.run.id))$('ve-runs').value=this.run.id;
+  renderTask(suite){const task=$('ve-task-filter').value,previous=suite||$('ve-suite').value;const suites=this.catalog.suites.filter(s=>s.task===task);$('ve-suite').replaceChildren(...suites.map(s=>new Option(`${s.name} · ${s.layouts.length} 张 · ${s.id.slice(0,8)}`,s.id)));if(suites.some(s=>s.id===previous))$('ve-suite').value=previous;else{const primary=suites.find(s=>s.id===task||s.name===task);if(primary)$('ve-suite').value=primary.id;}this.suiteInfo();this.controlDefaults({resetCheckpoint:false});const runs=this.catalog.runs.filter(r=>r.task===task);$('ve-runs').replaceChildren(...runs.map(r=>new Option(`${r.model} · ${r.suite_name} · ${r.round} · 已判定 ${r.metrics.completed}/${r.metrics.total} · 待测 ${r.metrics.pending} · ${r.checkpoint.split('/').pop()}`,r.id)));if(this.run&&runs.some(r=>r.id===this.run.id))$('ve-runs').value=this.run.id;
     $('ve-load').disabled=!runs.length;if(!runs.length)$('ve-runs').add(new Option('此任务暂无评测轮次，请在下方新建',''));
     $('ve-comparison').innerHTML='<div class="ve-table"><table><thead><tr><th>模型 / checkpoint / 轮次</th><th>任务 / suite</th><th>成功率</th><th>进度</th><th>模式</th><th>操作</th></tr></thead><tbody>'+runs.map(r=>`<tr><td>${esc(r.model)}<br><small>${esc(r.checkpoint)}</small><br>轮次：${esc(r.round)}</td><td>${esc(r.task)} / ${esc(r.suite_name)}</td><td>${this.rate(r.metrics)} (${r.metrics.success}/${r.metrics.completed})</td><td>已判定 ${r.metrics.completed}/${r.metrics.total}；中止 ${r.metrics.aborted}；待测 ${r.metrics.pending}</td><td>${r.mode==='demo'?'DEMO': '人工真机记录'}</td><td><button type="button" data-delete-run="${esc(r.id)}" ${r.metrics.running?'disabled':''}>删除</button></td></tr><tr class="ve-trial-results-row"><td colspan="6"><details class="ve-trial-results"><summary>查看 ${r.trials.length} 次结果</summary><ol>${r.trials.map((t,i)=>`<li>${i+1}:${esc(({pending:"待测",running:"评测中",success:"成功",failure:"失败",aborted:"中止"})[t.status]||t.status)}</li>`).join('')}</ol></details></td></tr>`).join('')+suites.filter(s=>!runs.some(r=>r.suite_id===s.id)).map(s=>`<tr><td>尚无评测</td><td>${esc(s.task)} / ${esc(s.name)}</td><td>—</td><td>共 ${s.layouts.length} 项</td><td>—</td><td>—</td></tr>`).join('')+'</tbody></table></div>';}
   rate(m){return m.success_rate===null?'—':(m.success_rate*100).toFixed(1)+'%';}

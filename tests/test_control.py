@@ -24,6 +24,30 @@ class ControlsTest(unittest.TestCase):
         self.addCleanup(self.control.close)
         self.payload=dict(model='ACT',checkpoint=str(self.ckpt),eval_config=str(self.config),run_id='test',revision=2)
 
+    def test_recursive_eval_catalog_isolates_models_and_preserves_tasks(self):
+        base = self.root / 'configs'
+        legacy = base / 'legacy.yaml'
+        base.mkdir()
+        legacy.write_text('fps: 15\n')
+        for model in ('ACT', 'N0'):
+            for task in ('chip_pick', 'egg_pick'):
+                path = base / model / task / f'{model}_{task}.yaml'
+                path.parent.mkdir(parents=True)
+                path.write_text('steps_per_inference: 15\n')
+            self.control.options['models'][model] = dict(eval_config=str(legacy))
+        saved = self.root / 'eval_configs/ACT/egg_pick/custom.yaml'
+        saved.parent.mkdir(parents=True)
+        saved.write_text('fps: 15\n')
+        status = self.control.status()['models']
+        for model in ('ACT', 'N0'):
+            entries = status[model]['eval_config_catalog']
+            tasks = [e for e in entries if e['task']]
+            self.assertEqual({e['task'] for e in tasks}, {'chip_pick', 'egg_pick'})
+            self.assertTrue(all(e['model'] == model for e in entries))
+            self.assertIn(str(legacy), status[model]['eval_configs'])
+            self.assertFalse(any('/' + ('N0' if model == 'ACT' else 'ACT') + '/' in e['path'] for e in tasks))
+        self.assertIn(str(saved), status['ACT']['eval_configs'])
+
     def test_server_and_checkpoint_check_use_current_saved_round_yaml(self):
         for model, profile in (('ACT', 'xarm7_eef10'), ('pi05', 'xarm7_eef10'),
                                ('N0', 'xarm7_eef_n0vtla'), ('FTP1', 'xarm7_eef_ftp1')):
