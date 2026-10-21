@@ -2,6 +2,100 @@ import {VLAEvaluation} from '/evaluation.mjs';
 import {ActionReplay} from '/replay.mjs';
 import {RealtimeComparison} from '/comparison.mjs';
 const $ = id => document.getElementById(id);
+
+class CameraDrawer {
+  constructor() {
+    this.tile=$('live').closest('.comparison-tile');
+    this.home=document.createComment('live camera home');
+    this.tile.before(this.home);
+    $('camera-drawer-close').onclick=()=>this.close();
+    document.addEventListener('suite-editor-open',()=>this.open());
+    $('vla-camera-drawer').addEventListener('keydown',event=>{
+      if(event.key==='Escape'){this.close();$('refresh').focus();}
+    });
+    document.addEventListener('live-reset',()=>this.status('等待相机连接…'));
+    document.addEventListener('live-frame',()=>{
+      this.status('实时预览 · '+($('camera').selectedOptions[0]?.textContent||'当前相机'));
+      $('vla-camera-drawer').dataset.state='ready';
+    });
+    document.addEventListener('live-error',event=>this.status(event.detail,'error'));
+    document.addEventListener('console-camera-paused',()=>this.close());
+    document.addEventListener('page-changed',()=>{
+      if(location.hash!=='#vla')this.close();
+    });
+    window.addEventListener('hashchange',()=>{
+      if(location.hash!=='#vla')this.close();
+    });
+  }
+  status(text,state='loading') {
+    $('camera-drawer-status').textContent=text;
+    $('vla-camera-drawer').dataset.state=state;
+  }
+  open(connecting=false) {
+    if(location.hash!=='#vla')return;
+    if(connecting)this.status('正在连接相机…');
+    else if(!$('live').getAttribute('src'))this.status('相机未开启，点击左侧“开启 / 刷新相机”查看当前场景。','idle');
+    $('camera-drawer-view').append(this.tile);
+    $('vla-camera-drawer').inert=false;
+    $('console-stage').classList.add('camera-drawer-open');
+    $('refresh').setAttribute('aria-expanded','true');
+    $('camera-drawer-close').textContent='返回 VLA 评测';
+    $('camera-drawer-close').setAttribute('aria-label','返回 VLA 评测');
+  }
+  close() {
+    if($('vla-camera-drawer').contains(document.activeElement))$('refresh').focus();
+    $('console-stage').classList.remove('camera-drawer-open');
+    $('refresh').setAttribute('aria-expanded','false');
+    $('vla-camera-drawer').inert=true;
+    this.home.after(this.tile);
+  }
+}
+
+class TrainingOverlayPanel {
+  constructor(token) {
+    this.token=token;
+    $('training-overlay-root').addEventListener('input',()=>{
+      $('training-overlay-view').replaceChildren(new Option('自动选择全景视角','auto'));
+    });
+    action('training-overlay-generate',()=>this.generate());
+  }
+  async generate() {
+    const root=$('training-overlay-root').value.trim();
+    if(!root){$('training-overlay-status').textContent='请填写服务器上的 LeRobot v3 训练集路径';return;}
+    const status=$('training-overlay-status');
+    const previous=!$('training-overlay-result').hidden?'（下方保留上次生成的图片）':'';
+    const fields=[$('training-overlay-root'),$('training-overlay-view')];
+    fields.forEach(field=>field.disabled=true);
+    status.classList.remove('error');
+    status.textContent='正在读取训练集元数据…'+previous;
+    try {
+      let job=await api('/api/evaluation/training-overlay',{
+        root,view:$('training-overlay-view').value
+      },{'X-Replay-Token':this.token});
+      while(job.state==='running'){
+        status.textContent=(job.total?`正在提取首帧 ${job.completed} / ${job.total}…`:'正在读取训练集元数据…')+previous;
+        await new Promise(resolve=>setTimeout(resolve,500));
+        job=await api('/api/evaluation/training-overlay?id='+encodeURIComponent(job.id));
+      }
+      if(job.views){
+        $('training-overlay-view').replaceChildren(...job.views.map(view=>new Option(view,view)));
+        $('training-overlay-view').value=job.view;
+      }
+      if(job.state!=='done')throw Error(job.error||'首帧叠加生成失败');
+      // This is an independent static image, never a live-camera overlay.
+      const image=new Image();image.src=job.url;await image.decode();
+      $('training-overlay-image').src=job.url;
+      $('training-overlay-link').href=job.url;
+      $('training-overlay-caption').textContent=`${job.root} · ${job.view} · ${job.total} 个 episode · 等权叠加 · ${job.width} × ${job.height}`;
+      $('training-overlay-result').hidden=false;
+      status.textContent=`已生成 ${job.total} 张首帧的静态叠加图。可点击图片放大；切换视角后点击按钮重新生成。`;
+    } catch(error) {
+      status.textContent='生成失败：'+error.message+previous;
+      status.classList.add('error');
+    } finally { fields.forEach(field=>field.disabled=false); }
+  }
+}
+
 export async function api(path, body, headers={}) {
   const response = await fetch(path, body === undefined ? {cache:'no-store'} : {
     method:'POST', headers:{'Content-Type':'application/json',...headers}, body:JSON.stringify(body)});
@@ -122,6 +216,8 @@ export class SnapshotButton {
 async function main(){
   const status=await api('/api/status');$('mode').textContent=`${status.mode==='demo'?'DEMO · 合成相机，无真实硬件':(status.mode==='reference_only'?'布局记录模式 · 相机由终端评测使用':'真实相机 · 复用原首帧 HTTP 服务')} | 机械臂回放：${status.robot_execution?'手动执行已启用':'禁用'}`;
   $('capture-note').textContent=status.mode==='demo'?'当前保存的是合成图。':'旧接口固定保存双相机；选择器控制预览。真实采集时间、设备时间域及内参不可获取时标记 null。';
+  const drawer=new CameraDrawer();
+  new TrainingOverlayPanel(status.replay.token);
   const camera=new CameraViewer(status.mode),overlay=new ImageOverlay(),reference=new ReferenceImageSelector(overlay);
   new RealtimeComparison();new DatasetSelector(reference);
   new ActionReplay(status.replay);
@@ -138,7 +234,7 @@ async function main(){
   };
   document.addEventListener('evaluation-layout-ready',placeAlignment);
   document.addEventListener('page-changed',placeAlignment);
-  new SnapshotButton(()=>evaluation.guard(()=>evaluation.captureLayout()));
+  new SnapshotButton(()=>{drawer.open();return evaluation.guard(()=>evaluation.captureLayout());});
   await evaluation.load();
   if(status.mode==='reference_only'){ $('snapshot').disabled=true; $('refresh').disabled=true; $('capture-note').textContent='上传提前拍好的布局图；本模式不打开相机，不影响终端评测。'; }
   const cameras=async(isCurrent=()=>true)=>{const selected=$('reference-image').dataset.cameraId||$('camera').value;const data=await api('/api/cameras');if(!isCurrent())return;$('camera').replaceChildren(...data.map(d=>{const o=new Option(`${d.label||d.name||d.serial} · ${d.serial}${d.error?' · '+d.error:''}`,d.serial);o.disabled=!d.connected||!!d.error;return o;}));if(data.some(d=>d.serial===selected))$('camera').value=selected;camera.select($('camera').value);message('相机列表已刷新');};
@@ -172,6 +268,7 @@ async function main(){
       const current=await api('/api/status').catch(()=>({}));
       if(generation!==connectionGeneration)return;
       message(current.camera_service?.detail||e.message,true);
+      document.dispatchEvent(new CustomEvent('live-error',{detail:current.camera_service?.detail||e.message}));
       if(current.preview_enabled && current.camera_service?.state==='connecting' && attempts++<20)
         setTimeout(poll,1500);
     }};
@@ -186,11 +283,11 @@ async function main(){
       }
       $('idm-camera-status').textContent='网页相机预览已开启；使用 VLA 前请点击“断开相机连接”。';
       await poll();
-    }catch(e){message(e.message,true);}
+    }catch(e){document.dispatchEvent(new CustomEvent('live-error',{detail:e.message}));message(e.message,true);}
   };
   document.addEventListener('console-camera-paused',()=>{++connectionGeneration;++evaluation.cameraGeneration;camera.select('');message('相机预览已关闭');});
   document.addEventListener('console-camera-enabled',()=>connect());
-  $('camera').onchange=()=>camera.select($('camera').value);action('refresh',()=>connect(true));
+  $('camera').onchange=()=>camera.select($('camera').value);action('refresh',()=>{drawer.open(true);return connect(true);});
   let pageInitialized=false;
   for(const button of document.querySelectorAll('[data-page]'))button.onclick=()=>{
     const page=button.dataset.page;

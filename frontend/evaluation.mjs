@@ -30,7 +30,7 @@ export class VLAEvaluation {
 <p id="ve-session-status" role="status">正在连接评测会话…</p><p>每个任务保存独立布局测试集；不同模型和 checkpoint 使用同一测试集，各自新建评测轮次。可在下方启动模型服务和评测，也可沿用终端。</p>
 
 <details id="ve-suite-management" class="ve-step" open><summary>1 · 布局测试集管理</summary>
-<div class="ve-grid"><label>任务<select id="ve-task-filter"></select></label><label>布局测试集<select id="ve-suite"></select></label></div><p id="ve-suite-info"></p><div class="ve-actions"><button id="ve-edit-suite">加载此 suite 补拍 / 编辑</button><button id="ve-delete-suite">删除选中的 suite</button></div><details id="ve-suite-images" hidden><summary id="ve-suite-images-title">布局图片</summary><div id="ve-suite-preview"></div></details>
+<div class="ve-grid"><label>任务<select id="ve-task-filter"></select></label><label>布局测试集（选择即加载）<select id="ve-suite"></select></label></div><p id="ve-suite-info"></p><details id="ve-suite-images" hidden><summary id="ve-suite-images-title">布局图片</summary><div id="ve-suite-preview"></div></details>
 </details>
 <section id="ve-resume" class="ve-step"><h3>2 · 继续已有评测</h3><p>选择上次的轮次，恢复已保存的进度、模型和配置。继续按钮不会启动机械臂。</p><div class="ve-grid"><label>已有评测轮次<select id="ve-runs"></select></label></div><button id="ve-load" class="primary">继续选中的评测</button><div id="ve-resume-config-host" hidden></div></section>
 <dialog id="ve-delete-suite-dialog" aria-labelledby="ve-delete-suite-title"><h3 id="ve-delete-suite-title">确认删除 suite？</h3><p id="ve-delete-suite-description"></p><p>删除后无法恢复，该 suite 将不再可选。已有评测记录及其使用的布局图会保留，可继续历史评测。</p><div class="ve-actions"><button id="ve-delete-suite-cancel">取消</button><button id="ve-delete-suite-confirm">确认删除</button></div></dialog>
@@ -47,13 +47,16 @@ export class VLAEvaluation {
 <details id="ve-result-editor" hidden><summary id="ve-result-editor-title">查看 / 修改历史结果</summary><p>选中已记录的样本修改结果和备注，保存后自动更新成功率与导出记录。</p><label>已记录的样本<select id="ve-result-trial"></select></label><img id="ve-result-layout" alt="所选历史样本的布局图" style="max-width:100%;max-height:260px"><label>修改结果<select id="ve-corrected-result"><option value="success">成功</option><option value="failure">失败</option><option value="aborted">中止</option></select></label><label>备注<textarea id="ve-corrected-note"></textarea></label><button id="ve-save-result">保存结果修改</button></details>
 <p><a id="ve-json" target="_blank">导出 JSON</a> · <a id="ve-csv">导出 CSV</a></p><div id="ve-trials"></div></section>
 `;
+    // Suite management remains usable while the assessment workspace is hidden.
+    for(const id of ['ve-delete-suite-dialog','ve-delete-run-dialog'])document.body.append($(id));
     this.configEditorHome=document.createComment('new evaluation config editor');
     $('ve-config-editor').before(this.configEditorHome);
     $('ve-suite-name').addEventListener('input',()=>this.builderProgress());
     $('ve-target-count').addEventListener('input',()=>this.builderProgress());
-    this.bind('ve-new-suite',()=>{this.editingSuite=null;this.draft=[];$('ve-suite-name').value='';$('ve-target-count').value=15;this.renderDraft();});
+    this.bind('ve-new-suite',()=>{this.editingSuite=null;this.draft=[];$('ve-suite-name').value='';$('ve-target-count').value=15;this.renderDraft();this.renderSuiteManager('');document.dispatchEvent(new CustomEvent('suite-editor-open'));});
     this.bind('ve-edit-suite',()=>this.editSuite());
-    this.bind('ve-delete-suite',()=>this.confirmDeleteSuite($('ve-suite').value));
+    this.bind('ve-delete-suite',()=>this.confirmDeleteSuite($('ve-manage-suite').value));
+    $('ve-manage-suite').onchange=()=>this.manageSuiteInfo();
     $('ve-comparison').addEventListener('click',event=>{const button=event.target.closest('[data-delete-run]');if(button)this.guard(()=>this.confirmDeleteRun(button.dataset.deleteRun));});
     $('ve-delete-suite-cancel').onclick=()=>$('ve-delete-suite-dialog').close();
     this.bind('ve-delete-suite-confirm',()=>this.deleteSuite());
@@ -103,7 +106,7 @@ export class VLAEvaluation {
       if(this.editingSuite)Object.assign(payload,{suite_id:this.editingSuite.id,revision:this.editingSuite.revision});else payload.directory_name=payload.name;
       const suite=await this.api('/api/evaluation/suites'+(this.editingSuite?'/update':''),payload);
       this.editingSuite={id:suite.id,revision:suite.revision||0};this.draft=suite.layouts.map(t=>({...t}));this.renderDraft();
-      await this.load(suite.task,suite.id);this.message(`suite 已保存：${suite.name}，${suite.layouts.length}/${suite.target_count||15} 张。`);
+      await this.load();this.renderSuiteManager(suite.id);this.message(`suite 已保存：${suite.name}，${suite.layouts.length}/${suite.target_count||15} 张。`);
     });
     this.bind('ve-create-run',async()=>{if($('ve-config').value&&($('ve-config-content').disabled||this.configEditorPath!==$('ve-config').value))throw Error('请等待配置加载完成');this.run=await this.api('/api/evaluation/runs',{suite_id:$('ve-suite').value,model:$('ve-model').value,checkpoint:$('ve-checkpoint').value,round:$('ve-round').value,eval_config:$('ve-config').value,...($('ve-config').value?{eval_config_content:$('ve-config-content').value}:{})});this.configDirty=false;delete (this.configDrafts||{})[this.configEditorPath];await this.load(this.run.task,this.run.suite_id);this.selectRun();if(status.mode!=='reference_only')await this.openCamera();});
     this.bind('ve-load',async()=>{if(!$('ve-runs').value)throw Error('请选择评测轮次');this.run=await this.api('/api/evaluation/run?id='+encodeURIComponent($('ve-runs').value));this.selectRun();if(status.mode!=='reference_only'&&this.run.trials[this.run.cursor].status==='pending')await this.openCamera();});
@@ -143,7 +146,7 @@ export class VLAEvaluation {
     this.renderDraft();
   }
   async editSuite(){
-    const id=$('ve-suite').value;
+    const id=$('ve-manage-suite').value;
     const catalog=await this.api('/api/evaluation/catalog');
     const suite=catalog.suites.find(s=>s.id===id);
     if(!suite)throw Error('请选择已有 suite');
@@ -152,7 +155,7 @@ export class VLAEvaluation {
     this.draft=suite.layouts.map(t=>({...t}));
     $('ve-task').value=suite.task;$('ve-suite-name').value=suite.name;
     $('ve-target-count').value=suite.target_count||Math.max(15,suite.layouts.length);
-    this.renderDraft();this.message('已加载 suite，可继续补拍或调整布局后保存。');
+    this.renderDraft();document.dispatchEvent(new CustomEvent('suite-editor-open'));this.message('已加载 suite，可继续补拍或调整布局后保存。');
   }
   confirmDeleteSuite(suiteId){
     const suite=this.catalog.suites.find(s=>s.id===suiteId);
@@ -171,7 +174,7 @@ export class VLAEvaluation {
       $('ve-delete-suite-dialog').close();this.deletingSuite=null;
       if(this.editingSuite?.id===suite.id){this.editingSuite=null;this.draft=[];$('ve-suite-name').value='';this.renderDraft();}
       if(this.referenceSuiteId===suite.id)this.referenceSuiteId=null;
-      await this.load(suite.task);this.updateTrialControls();
+      await this.load();this.updateTrialControls();
       this.message(`已删除 suite：${suite.name}；已有评测记录保留。`);
     }finally{$('ve-delete-suite-confirm').disabled=false;}
   }
@@ -553,7 +556,7 @@ export class VLAEvaluation {
         this.message('已连接评测会话：'+this.run.round+' · 第 '+(this.run.cursor+1)+' 张；不会重新启动机器人。');
       }else if(saved?.run_id)this.clearSession();
     }
-    this.suitesRoot=this.catalog.suites_root;this.builderProgress();const current=task||$('ve-task-filter').value;const tasks=[...new Set([...this.catalog.suites,...this.catalog.runs].map(s=>s.task))].sort();$('ve-task-filter').replaceChildren(...tasks.map(t=>new Option(t,t)));if(tasks.includes(current))$('ve-task-filter').value=current;this.renderTask(suite);this.roundOptions();}
+    this.suitesRoot=this.catalog.suites_root;this.builderProgress();const current=task||$('ve-task-filter').value;const tasks=[...new Set([...this.catalog.suites,...this.catalog.runs].map(s=>s.task))].sort();$('ve-task-filter').replaceChildren(...tasks.map(t=>new Option(t,t)));if(tasks.includes(current))$('ve-task-filter').value=current;this.renderTask(suite);this.renderSuiteManager();this.roundOptions();}
   useLayoutReference(suite,layout){
     if(!layout)return;
     const name=suite.name||suite.suite_name||'',view=`${name} ${layout.label}`;
@@ -562,12 +565,23 @@ export class VLAEvaluation {
     this.reference.add(layout.url,`${name} / ${layout.label}`);
     if(this.run&&cameraId&&[...$('camera').options].some(o=>o.value===cameraId)&&$('camera').value!==cameraId){$('camera').value=cameraId;$('camera').dispatchEvent(new Event('change'));}
   }
+  renderSuiteManager(selected=$('ve-manage-suite').value){
+    const select=$('ve-manage-suite');
+    select.replaceChildren(new Option('请选择 suite',''),...this.catalog.suites.map(s=>
+      new Option(`${s.task} / ${s.name} · ${s.layouts.length} 张布局`,s.id)));
+    select.value=this.catalog.suites.some(s=>s.id===selected)?selected:'';
+    this.manageSuiteInfo();
+  }
+  manageSuiteInfo(){
+    const suite=this.catalog.suites.find(s=>s.id===$('ve-manage-suite').value);
+    $('ve-sidebar-suite-info').textContent=suite?`待管理：${suite.task} / ${suite.name} · ${suite.layouts.length} 张布局`:'请选择要补拍或删除的 suite，或在下方拍摄新 suite。';
+    $('ve-edit-suite').disabled=!suite;
+    $('ve-delete-suite').disabled=!suite;
+  }
   suiteInfo(){
     const s=this.catalog.suites.find(s=>s.id===$('ve-suite').value);
     $('ve-suite-info').textContent=s?`${s.layouts.length}/${s.target_count||15} 张布局 · 测试集 ID：${s.id}`:'先保存一个任务的布局测试集。';
     if(s&&this.referenceSuiteId!==s.id){this.referenceSuiteId=s.id;this.useLayoutReference(s,this.run?.suite_id===s.id?this.run.trials[this.run.cursor]:s.layouts[0]);}
-    $('ve-edit-suite').disabled=!s;
-    $('ve-delete-suite').disabled=!s;
     $('ve-suite-images').hidden=!s;
     $('ve-suite-images-title').textContent=s?`布局图片（${s.layouts.length} 张）`:'布局图片';
     $('ve-suite-preview').innerHTML=s?'<p>已保存的布局图片，点击可加载为相机对齐参考图。</p><div class="ve-layout-gallery">'+s.layouts.map((t,i)=>`<button type="button" data-layout-index="${i}"><img loading="lazy" src="${esc(t.url)}" alt="${esc(t.label)}"><span>${i+1}. ${esc(t.label)}</span></button>`).join('')+'</div>':'';

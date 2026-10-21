@@ -2,3 +2,7 @@ Pillow>=9
 opencv-python>=4.8
 numpy>=1.24
 OmegaConf>=2.3
+
+# Read-only LeRobot v3 episode metadata and video decoding
+pyarrow>=14
+av>=12

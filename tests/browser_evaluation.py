@@ -18,6 +18,8 @@ def check_mode(browser, mode):
         image = app.upload(png())
         suite = app.evaluation.create_suite(dict(task='egg', name='resume_suite', directory_name='resume_suite',
             layouts=[dict(url=image['url'], label='one'), dict(url=image['url'], label='two')]))
+        other = app.evaluation.create_suite(dict(task='other_task', name='other_suite', directory_name='other_suite',
+            layouts=[dict(url=image['url'], label='other')]))
         server = ThreadingHTTPServer(('127.0.0.1', 0), make_workbench_handler(app))
         server.daemon_threads = True
         thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -31,10 +33,46 @@ def check_mode(browser, mode):
             expect(page.locator('#ve-resume')).to_be_visible()
             expect(page.locator('#ve-setup')).to_be_visible()
             assert page.locator('#ve-resume').bounding_box()['y'] < page.locator('#ve-setup').bounding_box()['y']
-            expect(page.locator('#ve-edit-suite')).to_be_enabled()
+            expect(page.locator('#ve-manage-suite')).to_have_value('')
+            expect(page.locator('#vla-suite-builder #ve-edit-suite')).to_be_disabled()
+            expect(page.locator('#vla-suite-builder #ve-delete-suite')).to_be_disabled()
+            # Managing another task's suite must preserve the assessment selection.
+            expect(page.locator('#ve-suite')).to_have_value(suite['id'])
+            page.locator('#ve-manage-suite').select_option(other['id'])
+            page.locator('#ve-task-filter').select_option('other_task')
+            expect(page.locator('#ve-manage-suite')).to_have_value(other['id'])
+            page.locator('#ve-task-filter').select_option('egg')
+            expect(page.locator('#ve-manage-suite')).to_have_value(other['id'])
+            expect(page.locator('#ve-suite')).to_have_value(suite['id'])
+            page.locator('#ve-edit-suite').click()
+            expect(page.locator('#ve-suite-name')).to_have_value('other_suite')
+            expect(page.locator('#vla-evaluation')).not_to_be_visible()
+            expect(page.locator('#vla-camera-drawer')).to_be_visible()
+            expect(page.locator('#ve-suite')).to_have_value(suite['id'])
+            page.locator('#ve-save-suite').click()
+            page.wait_for_function("document.querySelector('#message').textContent.includes('suite 已保存')")
+            expect(page.locator('#ve-suite')).to_have_value(suite['id'])
+            expect(page.locator('#ve-task-filter')).to_have_value('egg')
+            page.locator('#ve-delete-suite').click()
+            expect(page.locator('#ve-delete-suite-description')).to_contain_text('other_suite')
+            page.locator('#ve-delete-suite-confirm').click()
+            expect(page.locator('#message')).to_contain_text('已删除 suite')
+            expect(page.locator('#ve-manage-suite')).to_have_value('')
+            expect(page.locator('#ve-suite')).to_have_value(suite['id'])
+            expect(page.locator('#ve-task-filter')).to_have_value('egg')
+            page.locator('#camera-drawer-close').click()
+            expect(page.locator('#vla-evaluation')).to_be_visible()
+            page.locator('#ve-manage-suite').select_option(suite['id'])
+            expect(page.locator('#vla-suite-builder #ve-edit-suite')).to_be_enabled()
+            expect(page.locator('#vla-suite-builder #ve-delete-suite')).to_be_enabled()
+            expect(page.locator('#ve-suite-management #ve-edit-suite')).to_have_count(0)
+            expect(page.locator('#ve-suite-management #ve-delete-suite')).to_have_count(0)
+            expect(page.locator('#ve-sidebar-suite-info')).to_contain_text('egg / resume_suite')
             assert page.locator('#ve-suite-management').bounding_box()['y'] < page.locator('#ve-resume').bounding_box()['y']
             # A fresh page must restore the persisted draft and revision for editing.
             page.reload()
+            expect(page.locator('#ve-manage-suite')).to_have_value('')
+            page.locator('#ve-manage-suite').select_option(suite['id'])
             page.locator('#ve-edit-suite').click()
             expect(page.locator('#ve-suite-name')).to_have_value('resume_suite')
             expect(page.locator('.ve-draft-item')).to_have_count(2)
@@ -46,12 +84,16 @@ def check_mode(browser, mode):
             assert saved['revision'] == 1 and saved['target_count'] == 20
             assert [item['label'] for item in saved['layouts']] == ['two', 'one']
             page.reload()
+            expect(page.locator('#ve-manage-suite')).to_have_value('')
+            page.locator('#ve-manage-suite').select_option(suite['id'])
             page.locator('#ve-edit-suite').click()
             expect(page.locator('#ve-target-count')).to_have_value('20')
             page.locator('#ve-save-suite').click()
             page.wait_for_function("document.querySelector('#message').textContent.includes('suite 已保存')")
             assert app.evaluation.read('suites', suite['id'])['revision'] == 2
 
+            page.locator('#camera-drawer-close').click()
+            expect(page.locator('#vla-evaluation')).to_be_visible()
             # No process profiles or checkpoint catalog are needed for manual recording.
             page.locator('#ve-manual-checkpoint').fill('terminal-checkpoint')
             page.locator('#ve-round').fill('manual-round')
@@ -109,11 +151,12 @@ def check_mode(browser, mode):
             expect(details.locator('li')).to_have_count(2)
             expect(details.locator('li').nth(0)).to_contain_text('成功')
             expect(details.locator('li').nth(1)).to_contain_text('失败')
-            # Suite management remains visible when new-round setup is collapsed.
+            # Sidebar suite actions stay available while the suite loader is collapsed.
             page.locator('#ve-setup').evaluate('(el)=>el.open=false')
             expect(page.locator('#ve-suite-management')).to_be_visible()
-            page.locator('#ve-suite-management').evaluate('(el)=>el.open=true')
-            expect(page.locator('#ve-delete-suite')).to_be_visible()
+            page.locator('#ve-suite-management').evaluate('(el)=>el.open=false')
+            page.locator('#ve-manage-suite').select_option(suite['id'])
+            expect(page.locator('#vla-suite-builder #ve-delete-suite')).to_be_visible()
             page.locator('#ve-delete-suite').click()
             expect(page.locator('#ve-delete-suite-dialog')).to_be_visible()
             expect(page.locator('#ve-delete-suite-description')).to_contain_text('resume_suite')
@@ -128,6 +171,9 @@ def check_mode(browser, mode):
             expect(page.locator('#message')).to_contain_text('已删除 suite')
             expect(page.locator('#ve-suite option')).to_have_count(0)
             expect(page.locator('#ve-delete-suite')).to_be_disabled()
+            expect(page.locator('#ve-edit-suite')).to_be_disabled()
+            expect(page.locator('#ve-manage-suite')).to_have_value('')
+            expect(page.locator('#ve-sidebar-suite-info')).to_contain_text('请选择要补拍或删除')
             assert app.evaluation.catalog()['suites'] == []
             assert len(app.evaluation.catalog()['runs']) == 1
             for layout in run['trials']:

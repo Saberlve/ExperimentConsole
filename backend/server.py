@@ -60,6 +60,8 @@ class Application:
         self.camera = CameraAdapter(config)
         self.snapshot = SnapshotService(FirstFrameAdapter(self.camera), self.output)
         self.dataset = DatasetAdapter(config)
+        from backend.training_overlay import TrainingOverlay
+        self.training_overlay = TrainingOverlay(self)
         self.idm, self.vla = IDMAdapter(), VLAAdapter()
         self.record_lock = threading.Lock()
         self.replay = ReplayService(config, self.output, ROOT)
@@ -245,6 +247,8 @@ def _make_console_handler(app):
                 self.reply(app.preview_status())
             elif path == '/api/evaluation/catalog':
                 self.reply(app.evaluation.catalog())
+            elif path == '/api/evaluation/training-overlay':
+                self.reply(app.training_overlay.status(query.get('id', [''])[0]))
             elif path == '/api/evaluation/sources':
                 self.reply(app.evaluation.source_catalog())
             elif path == '/api/evaluation/run':
@@ -340,7 +344,9 @@ def _make_console_handler(app):
                 payload = json.loads(raw, parse_constant=reject_constant)
                 if not isinstance(payload, dict):
                     raise ValueError('需要 JSON 对象')
-                if path == '/api/evaluation/control/server':
+                if path == '/api/evaluation/training-overlay':
+                    self.reply(app.training_overlay.start(payload), 202)
+                elif path == '/api/evaluation/control/server':
                     self.reply(app.control.start('server', payload))
                 elif path == '/api/evaluation/control/evaluation':
                     self.reply(app.control.start('evaluation', payload))
