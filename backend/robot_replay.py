@@ -203,6 +203,7 @@ def main() -> int:
     parser.add_argument("--dir", default=None, help="数据目录 (默认自动探测 scripts/idm、scripts 和experiment_console/WM_fisrtFrame / output)")
     parser.add_argument("--fps", type=float, default=FPS, help=f"下发频率 (默认 {FPS:g}Hz)")
     parser.add_argument("--dry-run", action="store_true", help="只加载校验和打印, 不连接机械臂")
+    parser.add_argument("--wait-for-recording", action="store_true", help="到达起点后等待控制台确认录制就绪")
     args = parser.parse_args()
     if not math.isfinite(args.fps) or args.fps <= 0:
         parser.error("--fps 必须为正有限数")
@@ -283,6 +284,11 @@ def main() -> int:
         if code != 0:
             raise RuntimeError(f"set_state(0) 失败, code={code}")
         time.sleep(0.2)
+
+        if args.wait_for_recording:
+            print('[ready] 等待双视角录制就绪', flush=True)
+            if sys.stdin.readline().strip() != 'recording-ready':
+                raise RuntimeError('未收到录制就绪确认，取消 CSV 动作下发')
 
         print(f"[run] 开始 {args.fps:g} Hz 下发, 共 {n} 步 (Ctrl+C 急停)")
         last_gripper = g0

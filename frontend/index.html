@@ -29,6 +29,10 @@
 <pre id="action-summary">上传后自动提取 10 维动作，按 timestamp_s 推断频率，并进行离线校验。</pre>
 <a id="action-download" download="actions.npy" hidden>下载转换后的 NPY</a>
 <details><summary>离线检查日志</summary><pre id="action-dry-log"></pre></details>
+<div class="replay-recording"><label class="inline"><input id="replay-record-video" type="checkbox" role="switch">回放时同时录制两个视角（全景 + 腕部）</label>
+<p>开启后，机械臂先回到起点，正式执行 CSV 动作时才开始录制；回放结束或停止时自动保存两个 MP4。每次回放单独建文件夹，不覆盖已有视频。</p>
+<p>固定保存目录：<code id="replay-recording-directory"></code></p>
+<p id="replay-recording-status" role="status">双视角录制未开启</p><div id="replay-recording-files"></div></div>
 <label class="inline"><input id="replay-confirm" type="checkbox">我已确认：动作是基坐标系绝对 TCP（位置 m），夹爪 0 全开 / 1 全闭，现场已准备好执行。</label>
 <p>执行会先操作夹爪并移动到首个位姿，再按文件频率回放。请停止其他遥操/控制程序。点击执行后立即使能并运行，不做控制器状态或 TCP 起始位置检查。</p>
 <div class="replay-actions"><button id="replay-start" class="execute" disabled>执行真实机械臂动作</button><button id="replay-stop" class="stop" disabled>停止回放</button></div>

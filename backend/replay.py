@@ -17,7 +17,7 @@ ACTIVE = {'checking', 'starting', 'running', 'stopping'}
 
 
 class ReplayService:
-    def __init__(self, config, output, console_root, adapter=None):
+    def __init__(self, config, output, console_root, adapter=None, camera=None, recording_ready=None):
         self.options = config.get('replay', {})
         self.enabled = config['mode'] == 'legacy_http' and self.options.get('enabled', False)
         self.ip = str(ipaddress.ip_address(self.options.get('robot_ip', '192.168.1.245')))
@@ -32,10 +32,14 @@ class ReplayService:
         self.stop_event = threading.Event()
         self.thread = None
         self.stop_thread = None
+        self.camera, self.recording_ready = camera, recording_ready
+        self.recording_output = Path(output) / 'idm_recordings'
+        self.recorder = None
 
     def capabilities(self):
         return {'enabled': self.enabled, 'robot_ip': self.ip, 'token': self.token,
-                'format': 'tcp-rot6d-m'}
+                'format': 'tcp-rot6d-m',
+                'recording': {'directory': str(self.recording_output), 'fps': 15}}
 
     def prepare(self, raw):
         import numpy as np
@@ -114,16 +118,29 @@ class ReplayService:
 
     def _persist(self):
         if self.run:
+            if self.recorder:
+                self.run['recording'] = self.recorder.status()
             path = self.output / self.run['job_id'] / (self.run['id'] + '.json')
             # This run owns its status file; updates do not replace source or prepared data.
             path.write_text(json.dumps(self.run, ensure_ascii=False, indent=2))
 
     def status(self):
         with self.lock:
+            if self.run and self.recorder:
+                self.run['recording'] = self.recorder.status()
             return json.loads(json.dumps(self.run)) if self.run else {'status': 'idle', 'logs': []}
 
-    def start(self, job_id, confirmed):
+    def recording_active(self):
         with self.lock:
+            return bool(self.run and self.run.get('recording', {}).get('enabled') and (
+                self.run['status'] in ACTIVE or self.thread and self.thread.is_alive()))
+
+    def start(self, job_id, confirmed, record_video=False):
+        with self.lock:
+            if not isinstance(record_video, bool):
+                raise ValueError('双视角录制开关必须为布尔值')
+            if record_video and self.camera is None:
+                raise ValueError('尚未配置双视角录制相机')
             if self.closed or not self.enabled:
                 raise ValueError('真实回放未启用；DEMO 模式仅支持转换和离线检查')
             if confirmed is not True:
@@ -141,8 +158,15 @@ class ReplayService:
                 raise ValueError('转换后的动作文件已被更改，请重新上传')
             self.stop_event.clear()
             self.process = None
+            self.recorder = None
             self.run = {'id': uuid.uuid4().hex, 'job_id': job_id, 'robot_ip': self.ip,
-                'status': 'checking', 'started_at': utc(), 'logs': [], 'stop_confirmed': False}
+                'status': 'checking', 'started_at': utc(), 'logs': [], 'stop_confirmed': False,
+                'recording': {'enabled': record_video, 'status': 'disabled'}}
+            if record_video:
+                from backend.replay_recording import ReplayRecording
+                self.recorder = ReplayRecording(self.camera, self.recording_output / self.run['id'],
+                                                self.output.parent, self.recording_ready)
+                self.run['recording'] = self.recorder.status()
             self._persist()
             self.thread = threading.Thread(target=self._execute, args=(job,), daemon=True)
             self.thread.start()
@@ -150,11 +174,14 @@ class ReplayService:
 
     def _execute(self, job):
         try:
+            if self.recorder and not self.stop_event.is_set():
+                self.recorder.prepare()
             with self.lock:
                 if self.stop_event.is_set():
                     return
                 self.run['status'] = 'starting'
-                self.process = self.adapter.launch(job['action_path'], job['fps'], self.ip)
+                options = {'wait_for_recording': True} if self.recorder else {}
+                self.process = self.adapter.launch(job['action_path'], job['fps'], self.ip, **options)
                 self._persist()
                 process = self.process
             log_path = self.output / job['id'] / (self.run['id'] + '.log')
@@ -167,6 +194,15 @@ class ReplayService:
                         if line.startswith('[run]') and not self.stop_event.is_set():
                             self.run['status'] = 'running'
                         self._persist()
+                    if line.startswith('[ready]') and self.recorder and not self.stop_event.is_set():
+                        # The robot has finished its blocking approach and waits here.
+                        # Capture fresh frames before releasing the first CSV command.
+                        self.recorder.start()
+                        with self.lock:
+                            if not self.stop_event.is_set():
+                                process.stdin.write('recording-ready\n')
+                                process.stdin.flush()
+                            self._persist()
             process.stdout.close()
             code = process.wait()
             with self.lock:
@@ -184,6 +220,13 @@ class ReplayService:
             if self.process is not None and self.process.poll() is None:
                 self.stop()
         finally:
+            if self.process is not None and self.process.stdin:
+                try:
+                    self.process.stdin.close()
+                except OSError:
+                    pass  # A stopped child may have already closed its input pipe.
+            if self.recorder:
+                self.recorder.close()
             with self.lock:
                 self.run['ended_at'] = utc()
                 self._persist()
@@ -230,3 +273,5 @@ class ReplayService:
             self.stop()
         if self.stop_thread:
             self.stop_thread.join(timeout=6)
+        if self.thread:
+            self.thread.join(timeout=20)

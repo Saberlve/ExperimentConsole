@@ -35,9 +35,13 @@ class LegacyReplayAdapter:
             raise ValueError('回放程序离线校验失败：' + log[-4000:])
         return log
 
-    def launch(self, path, fps, ip):
+    def launch(self, path, fps, ip, wait_for_recording=False):
         # Operator confirmed execution: run the replay script directly, no preflight gate.
-        return subprocess.Popen(self.command(path, fps, ip), cwd=self.root, stdout=subprocess.PIPE,
+        command = self.command(path, fps, ip)
+        if wait_for_recording:
+            command.append('--wait-for-recording')
+        return subprocess.Popen(command, cwd=self.root, stdout=subprocess.PIPE,
+            stdin=subprocess.PIPE if wait_for_recording else None,
             stderr=subprocess.STDOUT, text=True, bufsize=1, start_new_session=True)
 
     def stop(self, ip):

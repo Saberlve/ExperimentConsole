@@ -1,5 +1,6 @@
 """Optional, server-configured process controls. Never accepts shell commands from HTTP."""
 import os
+from http.client import HTTPConnection, HTTPException
 import re
 from pathlib import Path
 import signal
@@ -95,6 +96,18 @@ class ProcessControl:
         if model not in self.options['models']:
             raise ValueError('请选择已配置的模型')
         return self.options['models'][model]
+
+    def _probe_server(self, address):
+        # A bare TCP connect/disconnect produces a WebSocket handshake error.
+        # HTTPConnection goes directly to localhost, ignoring proxy variables.
+        connection = HTTPConnection(*address, timeout=3)
+        try:
+            connection.request('GET', '/health')
+            response = connection.getresponse()
+            if response.status != 200 or response.read(4) != b'ok\n':
+                raise OSError(f'模型健康检查响应异常（HTTP {response.status}）')
+        finally:
+            connection.close()
 
     def _spawn(self, kind, command, cwd, env, model, checkpoint, folder=None):
         directory = Path(folder) if folder is not None else self.directory
@@ -232,11 +245,10 @@ class ProcessControl:
                         raise ValueError('评测 YAML、deployment_profile 或 action_space 已修改，请重启模型服务使两端使用同一份配置')
                 address = ('127.0.0.1', self.options['port'])
                 try:
-                    with socket.create_connection(address, timeout=3):
-                        pass
+                    self._probe_server(address)
                 except TimeoutError as exc:
                     raise ValueError(f'连接模型服务 {address[0]}:{address[1]} 超时（3 秒）；客户端尚未启动，请检查模型服务进程和端口') from exc
-                except OSError as exc:
+                except (OSError, HTTPException) as exc:
                     raise ValueError(f'连接模型服务 {address[0]}:{address[1]} 失败；客户端尚未启动：{exc}') from exc
                 config = Path(payload.get('eval_config') or profile.get('eval_config', '')).expanduser().resolve()
                 if not config.is_file():

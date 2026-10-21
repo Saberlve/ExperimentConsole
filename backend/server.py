@@ -64,7 +64,8 @@ class Application:
         self.training_overlay = TrainingOverlay(self)
         self.idm, self.vla = IDMAdapter(), VLAAdapter()
         self.record_lock = threading.Lock()
-        self.replay = ReplayService(config, self.output, ROOT)
+        self.replay = ReplayService(config, self.output, ROOT, camera=self.camera,
+                                    recording_ready=self.replay_recording_ready)
         self.evaluation = EvaluationService(self)
         self.control = ProcessControl(self)
         self.camera_lock = threading.RLock()
@@ -77,9 +78,15 @@ class Application:
         return {'enabled': self.preview_enabled,
                 'service': self.camera_service.status() if self.camera_service else None}
 
+    def replay_recording_ready(self):
+        if not self.preview_enabled or (self.camera_service and self.camera_service.state != 'ready'):
+            raise ValueError('请先开启 / 刷新相机，等待双相机连接后再录制回放')
+
     def release_preview(self):
         # No camera may be reacquired by the preview polling endpoints after this point.
-        with self.camera_lock:
+        with self.replay.lock, self.camera_lock:
+            if self.replay.recording_active():
+                raise ValueError('IDM 双视角录制尚未结束，请先停止回放并等待视频保存完成后再断开相机')
             self.preview_enabled = False
             service = self.camera_service
             if service:
@@ -387,7 +394,8 @@ def _make_console_handler(app):
                 elif path == '/api/evaluation/update-result':
                     self.reply(app.evaluation.update_result(payload))
                 elif path == '/api/replay/start':
-                    self.reply(app.replay.start(payload.get('job_id'), payload.get('confirmed')))
+                    self.reply(app.replay.start(payload.get('job_id'), payload.get('confirmed'),
+                                                payload.get('record_video', False)))
                 elif path == '/api/replay/stop':
                     self.reply(app.replay.stop())
                 elif path == '/api/snapshot':

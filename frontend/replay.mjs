@@ -7,6 +7,12 @@ const LABELS = {idle:'未运行', checking:'正在启动回放程序', starting:
 export class ActionReplay {
   constructor(capabilities) {
     this.capabilities=capabilities;this.job=null;this.busy=false;this.state='idle';this.polling=false;
+    this.recordingBusy=false;
+    try{$('replay-record-video').checked=localStorage.getItem('idm-record-video')==='true';}catch{}
+    $('replay-record-video').onchange=()=>{
+      try{localStorage.setItem('idm-record-video',String($('replay-record-video').checked));}catch{}
+      if(!this.recordingBusy)$('replay-recording-status').textContent=$('replay-record-video').checked?'已开启，执行回放时自动录制双视角':'双视角录制未开启';
+    };
     this.showCapabilities();
     $('replay-confirm').onchange=()=>this.buttons();
     $('action-csv').onchange=()=>this.upload($('action-csv').files);
@@ -19,7 +25,8 @@ export class ActionReplay {
     $('replay-start').onclick=async()=>{
       this.busy=true;this.buttons();
       try {
-        const result=await this.request('/api/replay/start',{job_id:this.job.id,confirmed:$('replay-confirm').checked});
+        const result=await this.request('/api/replay/start',{job_id:this.job.id,confirmed:$('replay-confirm').checked,
+          record_video:$('replay-record-video').checked});
         $('replay-confirm').checked=false;this.showStatus(result);
       } catch(error){$('replay-status').textContent=error.message;}
       finally{this.busy=false;this.buttons();}
@@ -35,6 +42,7 @@ export class ActionReplay {
   showCapabilities(){
     $('replay-ip').textContent=this.capabilities.robot_ip;
     $('replay-enabled').textContent=this.capabilities.enabled ? '真实回放已启用，只有点击执行才发送动作' : 'DEMO：支持 CSV 转换与离线检查，真实动作禁用';
+    $('replay-recording-directory').textContent=this.capabilities.recording?.directory||'服务更新后显示';
   }
   async refreshAuthorization(){
     // An open tab can outlive the server process and its authorization token.
@@ -51,13 +59,14 @@ export class ActionReplay {
     const data=await response.json();if(!response.ok)throw new Error(data.error);return data;
   }
   buttons(){
-    const active=ACTIVE.includes(this.state)||this.state==='stop_error';
+    const active=ACTIVE.includes(this.state)||this.state==='stop_error'||this.recordingBusy;
     $('action-csv').disabled=this.busy||active;
+    $('replay-record-video').disabled=this.busy||active;
     $('replay-start').disabled=this.busy||active||!this.job||!this.capabilities.enabled||!$('replay-confirm').checked;
     $('replay-stop').disabled=this.state==='idle'||this.state==='stopped'||this.state==='stopping';
   }
   async upload(files){
-    if(this.busy||ACTIVE.includes(this.state)||this.state==='stop_error')return;
+    if(this.busy||this.recordingBusy||ACTIVE.includes(this.state)||this.state==='stop_error')return;
     this.job=null;$('replay-confirm').checked=false;$('action-download').hidden=true;$('action-summary').textContent='';
     if(files.length!==1||!files[0].name.toLowerCase().endsWith('.csv')){
       $('action-summary').textContent='请一次选择或拖入一个 CSV 动作文件';this.buttons();return;
@@ -82,6 +91,25 @@ export class ActionReplay {
     $('replay-status').textContent=(LABELS[data.status]||data.status)+(data.error?'：'+data.error:'')+(data.stop_detail?' · '+data.stop_detail:'');
     $('replay-status').dataset.state=data.status;
     $('replay-log').textContent=(data.logs||[]).join('\n');
+    const recording=data.recording;
+    $('replay-recording-status').dataset.state=recording?.status||'disabled';
+    this.recordingBusy=!!recording?.enabled&&['preparing','waiting','recording','saving'].includes(recording.status);
+    const files=$('replay-recording-files');files.replaceChildren();
+    if(recording?.enabled){
+      if(this.recordingBusy)$('replay-record-video').checked=true;
+      const labels={preparing:'正在检查双相机并准备录制…',waiting:'等待机械臂到达起点，尚未开始录制…',recording:'正在同时录制两个视角',saving:'正在保存双视角视频…',saved:'双视角视频已保存',cancelled:'录制已取消',error:'双视角录制失败'};
+      $('replay-recording-status').textContent=(labels[recording.status]||recording.status)+
+        (recording.error?'：'+recording.error:'')+(recording.directory?' · '+recording.directory:'');
+      if(['saved','error'].includes(recording.status))for(const view of recording.views||[]){
+        if(!view.frames)continue;
+        const row=document.createElement('p'),link=document.createElement('a');
+        link.href=view.url;link.download=view.path.split('/').pop();
+        link.textContent=`下载 ${view.label} · ${view.frames} 帧 · ${view.duration_s?.toFixed(2)||'—'} 秒`;
+        row.append(link);files.append(row);
+      }
+    }else{
+      $('replay-recording-status').textContent=$('replay-record-video').checked?'已开启，执行回放时自动录制双视角':'双视角录制未开启';
+    }
     this.buttons();
   }
   async poll(){

@@ -1,4 +1,5 @@
 import io
+import contextlib
 import json
 import tempfile
 import threading
@@ -93,6 +94,41 @@ class ReplayTests(unittest.TestCase):
             self.assertIn('robot_replay.py', ' '.join(args))
             self.assertNotIn('replay_worker', ' '.join(args))
             self.assertNotIn('--dry-run', args)
+            self.assertNotIn('--wait-for-recording', args)
+            LegacyReplayAdapter.launch(self.adapter, '/tmp/example.npy', 15, '192.168.1.245',
+                                       wait_for_recording=True)
+            self.assertIn('--wait-for-recording', popen.call_args.args[0])
+            self.assertEqual(popen.call_args.kwargs['stdin'], -1)
+
+    def test_robot_waits_after_approach_and_before_first_csv_command(self):
+        module = self.adapter.module()
+        job = self.service.prepare(action_csv())
+        for acknowledgement in ('recording-ready\n', ''):
+            with self.subTest(acknowledgement=acknowledgement):
+                arm = Mock(error_code=0)
+                arm.get_position.return_value = (0, [160, 1, 135, 0, 0, 0])
+                arm.set_position_aa.return_value = 0
+                arm.set_mode.return_value = 0
+                arm.set_state.return_value = 0
+                wrapper = Mock()
+                wrapper.XArmAPI.return_value = arm
+                def acknowledge():
+                    # Only the blocking initial approach has run when input is read.
+                    self.assertEqual(arm.set_position_aa.call_count, 1)
+                    self.assertTrue(arm.set_position_aa.call_args.kwargs['wait'])
+                    self.assertEqual(arm.set_mode.call_args.args, (7,))
+                    return acknowledgement
+                reader = Mock()
+                reader.readline.side_effect = acknowledge
+                argv = ['robot_replay', job['action_path'], '--format', 'tcp-rot6d-m',
+                        '--wait-for-recording']
+                with patch.dict('sys.modules', {'xarm': Mock(), 'xarm.wrapper': wrapper}), \
+                        patch('sys.argv', argv), patch('sys.stdin', reader), \
+                        patch.object(module.time, 'sleep'), contextlib.redirect_stdout(io.StringIO()):
+                    code = module.main()
+                self.assertEqual(code, 0 if acknowledgement else 1)
+                self.assertEqual(arm.set_position_aa.call_count, 4 if acknowledgement else 1)
+                arm.disconnect.assert_called_once()
 
     def test_stop_failure_is_not_reported_as_stopped(self):
         job = self.service.prepare(action_csv())

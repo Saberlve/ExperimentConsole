@@ -81,7 +81,7 @@ class ControlsTest(unittest.TestCase):
         self.control.start('server', self.payload)
         self.control.jobs['server']['log'].write_text('server listening on 127.0.0.1:0\n')
         self.config.write_text('deployment_profile: xarm7_eef_n0vtla\naction_space: eef10\n')
-        with patch('backend.control.socket.create_connection') as connect:
+        with patch('backend.control.ProcessControl._probe_server') as connect:
             with self.assertRaisesRegex(ValueError, '重启模型服务'):
                 self.control.start('evaluation', self.payload)
         connect.assert_not_called()
@@ -92,7 +92,7 @@ class ControlsTest(unittest.TestCase):
         self.control.start("server", self.payload)
         self.control.jobs["server"]["log"].write_text("server listening on 127.0.0.1:0\n")
         self.config.write_text("deployment_profile: xarm7_eef10\naction_space: joint\n")
-        with patch("backend.control.socket.create_connection") as connect:
+        with patch("backend.control.ProcessControl._probe_server") as connect:
             with self.assertRaisesRegex(ValueError, "重启模型服务"):
                 self.control.start("evaluation", self.payload)
         connect.assert_not_called()
@@ -223,7 +223,7 @@ class ControlsTest(unittest.TestCase):
     def test_latch_write_failure_still_stops_client_and_controller(self):
         self.control.start('server', self.payload)
         self.control.jobs['server']['log'].write_text('server listening on 127.0.0.1:0\n')
-        with patch('backend.control.socket.create_connection'):
+        with patch('backend.control.ProcessControl._probe_server'):
             self.control.start('evaluation', self.payload)
         with patch.object(Path, 'write_text', side_effect=OSError('disk full')):
             with patch('backend.control.subprocess.run', return_value=SimpleNamespace(
@@ -240,7 +240,7 @@ class ControlsTest(unittest.TestCase):
         with self.assertRaises(ValueError): self.control.start('evaluation',self.payload)
         self.control.start('server',self.payload)
         self.control.jobs['server']['log'].write_text('server listening on 127.0.0.1:0\n')
-        with patch('backend.control.socket.create_connection'):
+        with patch('backend.control.ProcessControl._probe_server'):
             with self.assertRaises(ValueError): self.control.start('evaluation',dict(self.payload,revision=1))
             self.app.release_preview.assert_not_called()
             self.control.start('evaluation',self.payload)
@@ -255,7 +255,7 @@ class ControlsTest(unittest.TestCase):
         self.control.start('server',self.payload)
         self.control.jobs['server']['log'].write_text('server listening on 127.0.0.1:0\n')
         self.app.release_preview.side_effect=ValueError('camera busy')
-        with patch('backend.control.socket.create_connection'):
+        with patch('backend.control.ProcessControl._probe_server'):
             with self.assertRaisesRegex(ValueError,'camera busy'): self.control.start('evaluation',self.payload)
         self.assertFalse(self.control.active('evaluation'))
 
@@ -266,7 +266,7 @@ class ControlsTest(unittest.TestCase):
             self.control.jobs['evaluation']['intentional_stop'] = True
             self.control._kill('evaluation')
         with patch('backend.control.subprocess.run', return_value=result) as validate, \
-             patch('backend.control.socket.create_connection'):
+             patch('backend.control.ProcessControl._probe_server'):
             self.control.start('server', self.payload)
             self.control.jobs['server']['log'].write_text('server listening on 127.0.0.1:0\n')
             self.control.start('evaluation', self.payload)
@@ -287,7 +287,7 @@ class ControlsTest(unittest.TestCase):
     def test_failed_preflight_is_retried_without_releasing_cameras(self):
         self.control.start('server', self.payload)
         self.control.jobs['server']['log'].write_text('server listening on 127.0.0.1:0\n')
-        with patch('backend.control.socket.create_connection'), \
+        with patch('backend.control.ProcessControl._probe_server'), \
              patch('backend.control.subprocess.run', side_effect=[
                  SimpleNamespace(returncode=1, stdout='', stderr='invalid config'),
                  SimpleNamespace(returncode=0, stdout='', stderr='')]) as validate:
@@ -348,7 +348,7 @@ class ControlsTest(unittest.TestCase):
         self.control.start('server', self.payload)
         self.assertNotIn('devices', self.control.jobs)
         self.control.jobs['server']['log'].write_text('server listening on 127.0.0.1:0\n')
-        with patch('backend.control.socket.create_connection'), \
+        with patch('backend.control.ProcessControl._probe_server'), \
              patch.object(self.control, '_spawn', wraps=self.control._spawn) as spawn:
             self.control.start('evaluation', self.payload)
             worker = self.control.jobs['devices']['process']
@@ -381,7 +381,7 @@ class ControlsTest(unittest.TestCase):
         self.control.start('server', self.payload)
         self.control.jobs['server']['log'].write_text('server listening on 127.0.0.1:0\n')
         self.config.write_text('fps: 5\n')
-        with patch('backend.control.socket.create_connection'):
+        with patch('backend.control.ProcessControl._probe_server'):
             self.control.start('evaluation', self.payload)
         self.assertTrue(self.control.active('evaluation'))
 
@@ -393,7 +393,7 @@ class ControlsTest(unittest.TestCase):
     def test_loading_model_blocks_evaluation_before_camera_release(self):
         self.control.start('server', self.payload)
         self.assertFalse(self.control.status()['jobs']['server']['ready'])
-        with patch('backend.control.socket.create_connection') as connect:
+        with patch('backend.control.ProcessControl._probe_server') as connect:
             with self.assertRaisesRegex(ValueError, '尚未出现 listening on'):
                 self.control.start('evaluation', self.payload)
         connect.assert_not_called()
@@ -415,9 +415,34 @@ class ControlsTest(unittest.TestCase):
     def test_policy_port_timeout_identifies_failed_stage(self):
         self.control.start('server', self.payload)
         self.control.jobs['server']['log'].write_text('server listening on 127.0.0.1:0\n')
-        with patch('backend.control.socket.create_connection', side_effect=TimeoutError('timed out')):
+        with patch('backend.control.ProcessControl._probe_server', side_effect=TimeoutError('timed out')):
             with self.assertRaisesRegex(ValueError, '连接模型服务 127.0.0.1:0 超时'):
                 self.control.start('evaluation', self.payload)
+        self.app.release_preview.assert_not_called()
+        self.assertFalse(self.control.active('evaluation'))
+
+    def test_health_probe_uses_http_and_closes_connection(self):
+        with patch('backend.control.HTTPConnection') as factory:
+            connection = factory.return_value
+            response = connection.getresponse.return_value
+            response.status = 200
+            response.read.return_value = b'ok\n'
+            self.control._probe_server(('127.0.0.1', 10093))
+            factory.assert_called_once_with('127.0.0.1', 10093, timeout=3)
+            connection.request.assert_called_once_with('GET', '/health')
+            connection.close.assert_called_once()
+
+    def test_unhealthy_response_blocks_client_before_camera_release(self):
+        self.control.start('server', self.payload)
+        self.control.jobs['server']['log'].write_text('server listening on 127.0.0.1:0\n')
+        for status, body in ((503, b'ok\n'), (200, b'wrong')):
+            with self.subTest(status=status, body=body), patch('backend.control.HTTPConnection') as factory:
+                connection = factory.return_value
+                connection.getresponse.return_value.status = status
+                connection.getresponse.return_value.read.return_value = body
+                with self.assertRaisesRegex(ValueError, '健康检查响应异常'):
+                    self.control.start('evaluation', self.payload)
+                connection.close.assert_called_once()
         self.app.release_preview.assert_not_called()
         self.assertFalse(self.control.active('evaluation'))
 
@@ -452,7 +477,7 @@ class TrialLifecycleTest(unittest.TestCase):
         self.control.jobs['server']['log'].write_text('server listening on 127.0.0.1:0\n')
 
     def start(self):
-        with patch('backend.control.socket.create_connection'):
+        with patch('backend.control.ProcessControl._probe_server'):
             self.run=self.control.start_trial(dict(run_id=self.run['id'],revision=self.run['revision']))
 
     def finish(self,exit_run=False):
@@ -495,7 +520,7 @@ class TrialLifecycleTest(unittest.TestCase):
         config = self.run['eval_config']
         server = self.control.jobs['server']['process']
         self.profile['evaluation'] = self.command('client', True) + ['{eval_config}']
-        with patch('backend.control.socket.create_connection'), patch.object(self.control, '_spawn', wraps=self.control._spawn) as spawn:
+        with patch('backend.control.ProcessControl._probe_server'), patch.object(self.control, '_spawn', wraps=self.control._spawn) as spawn:
             self.run = self.control.start_trial(dict(run_id=key, revision=self.run['revision'], eval_config_content='fps: 12\n'))
         self.assertEqual(self.run['id'], key)
         self.assertEqual(self.run['eval_config'], config)
@@ -511,7 +536,7 @@ class TrialLifecycleTest(unittest.TestCase):
         old = self.control.jobs['evaluation']
         server = self.control.jobs['server']['process']
         old_config = Path(self.run['eval_config']).read_text()
-        with patch('backend.control.socket.create_connection'):
+        with patch('backend.control.ProcessControl._probe_server'):
             self.run = self.control.start_trial(dict(run_id=self.run['id'], revision=self.run['revision'],
                 restart_current=True, eval_config_content='fps: 15\nsteps_per_inference: 3\n'))
         self.assertIsNotNone(old['process'].poll())
