@@ -53,12 +53,12 @@ test('the final remaining layout is determined by results rather than its index'
   assert.equal(view.isFinalTrial(),false);
 });
 
-test('nested model task YAMLs appear as base templates alongside saved rounds',()=>{
+test('nested model task YAMLs appear in directory groups alongside saved rounds',()=>{
   const elements=new Map();
   const element=id=>{if(!elements.has(id))elements.set(id,{value:'',options:[],
-    replaceChildren(...options){this.options=options;},add(option){this.options.push(option);}});return elements.get(id);};
+    replaceChildren(...options){this.children=options;this.options=options.flatMap(option=>option.options||[option]);},add(option){this.options.push(option);}});return elements.get(id);};
   const previousDocument=globalThis.document,previousOption=globalThis.Option;
-  globalThis.document={getElementById:element};
+  globalThis.document={getElementById:element,createElement(){return {options:[],append(option){this.options.push(option);}};}};
   globalThis.Option=class{
     constructor(text,value){this.text=text;this.value=value;this.classList={add(){}};}
   };
@@ -70,9 +70,13 @@ test('nested model task YAMLs appear as base templates alongside saved rounds',(
     Object.assign(view,{controlState:{models:{FTP1:{eval_config:egg,eval_config_root:root,eval_configs:[charger,egg]}}},
       catalog:{runs:[{model:'FTP1',eval_config:saved}]},roundOptions(){},previewConfig(){}});
     view.controlDefaults();
+    const groups=element('ve-config').children;
     const options=element('ve-config').options;
-    assert.equal(options.find(o=>o.value===charger).text,'BASE · charger_press/FTP1_charger_press.yaml');
-    assert.equal(options.find(o=>o.value===egg).text,'BASE · egg_pick/FTP1_egg_pick.yaml');
+    assert.ok(groups.some(group=>group.label==='charger_press'));
+    assert.ok(groups.some(group=>group.label==='egg_pick'));
+    assert.ok(groups.some(group=>group.label==='已保存配置'));
+    assert.equal(options.find(o=>o.value===charger).text,'FTP1_charger_press.yaml');
+    assert.equal(options.find(o=>o.value===egg).text,'FTP1_egg_pick.yaml');
     assert.equal(options.find(o=>o.value===saved).text,'round.yaml');
     assert.equal(options.filter(o=>o.value===egg).length,1);
     assert.equal(element('ve-config').value,egg);
