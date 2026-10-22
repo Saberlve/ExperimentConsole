@@ -2,6 +2,57 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {VLAEvaluation} from '../frontend/evaluation.mjs';
 
+test('finishing the last trial clears the session and does not reopen alignment cameras',async()=>{
+  const previousDocument=globalThis.document,previousEvent=globalThis.CustomEvent;
+  try{
+    for(const exited of [false,true]){
+      const elements=new Map(),element=id=>{
+        if(!elements.has(id))elements.set(id,{value:id==='ve-trial-result'?'failure':'final note'});
+        return elements.get(id);
+      };
+      globalThis.document={getElementById:element,dispatchEvent(){}};
+      globalThis.CustomEvent=class{constructor(type){this.type=type;}};
+      const view=Object.create(VLAEvaluation.prototype),calls=[],messages=[];
+      const record={id:'run',revision:4,task:'egg',suite_id:'suite',cursor:0,
+        trials:[{status:'running'},...(!exited?[{status:'pending'}]:[])],
+        metrics:{pending:exited?0:1},result_files:{json:'results.json',csv:'results.csv'}};
+      Object.assign(view,{run:record,hadModel:true,cameraGeneration:0,status:{mode:'legacy_http'},
+        async api(path,payload){calls.push([path,payload]);return {...record,evaluation_exited:exited};},
+        async load(){},selectRun(){calls.push('select');},async openCamera(){calls.push('camera');},
+        clearSession(){calls.push('clear');},async pollControl(){},message(text){messages.push(text);}});
+      await view.finishRun(false);
+      assert.equal(calls[0][0],'/api/evaluation/finish-trial');
+      assert.equal(calls[0][1].result,'failure');
+      assert.equal(calls[0][1].note,'final note');
+      if(exited){
+        assert.equal(view.run,null);
+        assert.equal(view.hadModel,false);
+        assert.equal(element('ve-setup').open,true);
+        assert.equal(element('ve-current').hidden,true);
+        assert.ok(calls.includes('clear'));
+        assert.ok(!calls.includes('camera'));
+        assert.ok(!calls.includes('select'));
+        assert.match(messages.at(-1),/已退出评测.*results.json.*results.csv/);
+      }else{
+        assert.ok(view.run);
+        assert.ok(calls.includes('camera'));
+        assert.ok(calls.includes('select'));
+        assert.ok(!calls.includes('clear'));
+      }
+    }
+  }finally{globalThis.document=previousDocument;globalThis.CustomEvent=previousEvent;}
+});
+
+test('the final remaining layout is determined by results rather than its index',()=>{
+  const view=Object.create(VLAEvaluation.prototype);
+  view.run={cursor:1,trials:[{status:'pending'},{status:'running'}]};
+  assert.equal(view.isFinalTrial(),false);
+  view.run={cursor:0,trials:[{status:'running'},{status:'aborted'}]};
+  assert.equal(view.isFinalTrial(),true);
+  view.run=null;
+  assert.equal(view.isFinalTrial(),false);
+});
+
 test('nested model task YAMLs appear as base templates alongside saved rounds',()=>{
   const elements=new Map();
   const element=id=>{if(!elements.has(id))elements.set(id,{value:'',options:[],

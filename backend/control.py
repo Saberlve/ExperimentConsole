@@ -575,12 +575,13 @@ class ProcessControl:
             record = self.app.evaluation.save_results(record['id'])
         if stop_error:
             raise ValueError('本条结果已保存；' + stop_error) from None
-        if exit_run:
+        finished = all(t['status'] in ('success', 'failure', 'aborted') for t in record['trials'])
+        if exit_run or finished:
             try:
                 self.app.release_preview()
             finally:
                 self.stop_server()
-            return record
+            return dict(record, evaluation_exited=True)
         try:
             self._reset_item(record)
         except Exception as exc:

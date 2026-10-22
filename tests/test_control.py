@@ -741,6 +741,92 @@ class TrialLifecycleTest(unittest.TestCase):
         self.assertNotIn('reset',self.events.read_text().splitlines());self.app.enable_preview.assert_not_called()
         self.assertTrue(Path(saved['result_files']['json']).is_file())
 
+    def complete_final_trial(self, result):
+        import json
+        self.start()
+        self.run = self.finish()
+        self.start()
+        reset = self.control.jobs['reset']
+        self.app.enable_preview.reset_mock()
+        with patch.object(self.control, '_close_devices', wraps=self.control._close_devices) as close:
+            saved = self.control.finish_trial(dict(run_id=self.run['id'],revision=self.run['revision'],
+                result=result,note='final outcome'))
+        self.assertTrue(saved['evaluation_exited'])
+        self.assertFalse(self.control.active('server'))
+        self.assertFalse(self.control.active('evaluation'))
+        self.assertIs(self.control.jobs['reset'], reset)
+        self.app.enable_preview.assert_not_called()
+        close.assert_called_once()
+        exported = json.loads(Path(saved['result_files']['json']).read_text())
+        self.assertEqual(exported['trials'][-1]['status'], result)
+        self.assertEqual(exported['trials'][-1]['note'], 'final outcome')
+        self.assertEqual(exported['metrics']['pending'], 0)
+        self.assertIn(result, Path(saved['result_files']['csv']).read_text())
+        self.assertEqual(self.events.read_text().splitlines().count('reset'), 1)
+
+    def test_final_success_saves_and_exits_without_another_reset(self):
+        self.complete_final_trial('success')
+
+    def test_final_failure_saves_and_exits_without_another_reset(self):
+        self.complete_final_trial('failure')
+
+    def test_final_aborted_trial_saves_and_exits_with_incomplete_score(self):
+        self.complete_final_trial('aborted')
+        saved = self.app.evaluation.summary(self.app.evaluation.read('runs', self.run['id']))
+        self.assertFalse(saved['metrics']['all_scored'])
+        self.assertEqual(saved['metrics']['aborted'], 1)
+
+    def test_last_remaining_trial_exits_even_when_it_is_not_the_last_index(self):
+        self.run['trials'][1]['status'] = 'failure'
+        self.app.evaluation.write('runs', self.run)
+        self.start()
+        saved = self.finish()
+        self.assertTrue(saved['evaluation_exited'])
+        self.assertEqual(saved['cursor'], 0)
+        self.assertFalse(self.control.active('server'))
+        self.assertNotIn('reset', self.control.jobs)
+        self.app.enable_preview.assert_not_called()
+
+    def test_last_index_does_not_exit_when_previous_layouts_are_pending(self):
+        self.run = self.control.transition_trial(dict(run_id=self.run['id'],revision=self.run['revision'],
+            action='select',trial_index=1))
+        self.start()
+        saved = self.finish()
+        self.assertFalse(saved.get('evaluation_exited', False))
+        self.assertEqual(saved['trials'][0]['status'], 'pending')
+        self.assertTrue(self.control.active('server'))
+        self.app.enable_preview.assert_called_once()
+
+    def test_final_stop_failure_saves_result_without_hiding_failure_or_resetting(self):
+        self.start()
+        self.run = self.finish()
+        self.start()
+        reset = self.control.jobs['reset']
+        self.app.enable_preview.reset_mock()
+        self.control.options['stop'] = [sys.executable,'-c','raise SystemExit(1)']
+        with self.assertRaisesRegex(ValueError, '本条结果已保存'):
+            self.finish()
+        saved = self.app.evaluation.read('runs', self.run['id'])
+        self.assertEqual(saved['trials'][-1]['status'], 'success')
+        self.assertIn('reset_error', saved['trials'][-1])
+        self.assertTrue(Path(saved['result_files']['json']).is_file())
+        self.assertTrue(self.control.active('server'))
+        self.assertIs(self.control.jobs['reset'], reset)
+        self.app.enable_preview.assert_not_called()
+
+    def test_final_export_failure_keeps_the_model_and_session_available(self):
+        self.start()
+        self.run = self.finish()
+        self.start()
+        reset = self.control.jobs['reset']
+        self.app.enable_preview.reset_mock()
+        with patch.object(self.app.evaluation, 'save_results', side_effect=OSError('export failed')):
+            with self.assertRaisesRegex(OSError, 'export failed'):
+                self.finish()
+        self.assertTrue(self.control.active('server'))
+        self.assertIs(self.control.jobs['reset'], reset)
+        self.app.enable_preview.assert_not_called()
+
     def test_camera_release_failure_never_starts_client(self):
         self.app.release_preview.side_effect=ValueError('camera still in use')
         with self.assertRaisesRegex(ValueError,'camera still in use'):self.start()
