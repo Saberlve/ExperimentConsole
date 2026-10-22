@@ -172,6 +172,7 @@ def main():
         app.browser_session.close()
         app.control.close()
         app.replay.close()
+        app.recording.close()
         if app.camera_service:
             app.camera_service.close()
 

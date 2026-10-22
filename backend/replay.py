@@ -11,19 +11,21 @@ import uuid
 from pathlib import Path
 from adapters.camera import utc
 from adapters.replay import LegacyReplayAdapter
+from backend.recording import video_name
 
 COLUMNS = ['tcp_x_m', 'tcp_y_m', 'tcp_z_m', 'r11', 'r21', 'r31', 'r12', 'r22', 'r32', 'feedback_closure']
 ACTIVE = {'checking', 'starting', 'running', 'stopping'}
 
 
 class ReplayService:
-    def __init__(self, config, output, console_root, adapter=None, camera=None, recording_ready=None):
+    def __init__(self, config, output, console_root, adapter=None, camera=None, recording_ready=None, recording=None):
         self.options = config.get('replay', {})
         self.enabled = config['mode'] == 'legacy_http' and self.options.get('enabled', False)
         self.ip = str(ipaddress.ip_address(self.options.get('robot_ip', '192.168.1.245')))
         self.token = secrets.token_urlsafe(32)
         self.output = Path(output) / 'replays'
         self.adapter = adapter or LegacyReplayAdapter(console_root, config)
+        self.recording = recording
         self.jobs = {}
         self.lock = threading.RLock()
         self.run = None
@@ -135,7 +137,7 @@ class ReplayService:
             return bool(self.run and self.run.get('recording', {}).get('enabled') and (
                 self.run['status'] in ACTIVE or self.thread and self.thread.is_alive()))
 
-    def start(self, job_id, confirmed, record_video=False):
+    def start(self, job_id, confirmed, record_video=False, recording_name='', camera_id=''):
         with self.lock:
             if not isinstance(record_video, bool):
                 raise ValueError('双视角录制开关必须为布尔值')
@@ -156,12 +158,13 @@ class ReplayService:
             target = Path(job['action_path'])
             if hashlib.sha256(target.read_bytes()).hexdigest() != job['action_sha256']:
                 raise ValueError('转换后的动作文件已被更改，请重新上传')
+            name = video_name(recording_name)
             self.stop_event.clear()
             self.process = None
             self.recorder = None
             self.run = {'id': uuid.uuid4().hex, 'job_id': job_id, 'robot_ip': self.ip,
                 'status': 'checking', 'started_at': utc(), 'logs': [], 'stop_confirmed': False,
-                'recording': {'enabled': record_video, 'status': 'disabled'}}
+                'recording_name': name, 'camera_id': camera_id, 'recording': {'enabled': record_video, 'status': 'disabled'}}
             if record_video:
                 from backend.replay_recording import ReplayRecording
                 self.recorder = ReplayRecording(self.camera, self.recording_output / self.run['id'],
@@ -173,9 +176,15 @@ class ReplayService:
             return self.status()
 
     def _execute(self, job):
+        owns_recording = False
         try:
             if self.recorder and not self.stop_event.is_set():
                 self.recorder.prepare()
+            if self.recording:
+                result = self.recording.start_replay(self.run['recording_name'], self.run['camera_id'], self.stop_event)
+                owns_recording = result is not None
+                if self.stop_event.is_set():
+                    return
             with self.lock:
                 if self.stop_event.is_set():
                     return
@@ -227,6 +236,18 @@ class ReplayService:
                     pass  # A stopped child may have already closed its input pipe.
             if self.recorder:
                 self.recorder.close()
+            if owns_recording:
+                try:
+                    recording = self.recording.stop()
+                    with self.lock:
+                        self.run['video_recording'] = recording['last']
+                        if not self.recorder:
+                            self.run['recording'] = recording['last']
+                        if recording['error']:
+                            self.run['recording_error'] = recording['error']
+                except Exception as exc:
+                    with self.lock:
+                        self.run['recording_error'] = str(exc)
             with self.lock:
                 self.run['ended_at'] = utc()
                 self._persist()
@@ -274,4 +295,4 @@ class ReplayService:
         if self.stop_thread:
             self.stop_thread.join(timeout=6)
         if self.thread:
-            self.thread.join(timeout=20)
+            self.thread.join(timeout=25)

@@ -14,7 +14,7 @@ from urllib.request import urlopen
 def app_camera_probe(url):
     return camera_urlopen(url.rstrip("/") + "/api/cameras", timeout=1)
 
-from urllib.parse import parse_qs, urlsplit, quote
+from urllib.parse import parse_qs, urlsplit, quote, unquote
 from PIL import Image, UnidentifiedImageError
 from adapters.camera import CameraAdapter, FirstFrameAdapter, utc, camera_urlopen
 from adapters.dataset import DatasetAdapter
@@ -26,6 +26,7 @@ from backend.snapshot import SnapshotService
 from backend.replay import ReplayService
 from backend.evaluation import EvaluationService
 from backend.control import ProcessControl
+from backend.recording import VideoRecording
 
 ROOT = Path(__file__).resolve().parents[1]
 MAX_BODY = 12 * 1024 * 1024
@@ -64,11 +65,11 @@ class Application:
         self.training_overlay = TrainingOverlay(self)
         self.idm, self.vla = IDMAdapter(), VLAAdapter()
         self.record_lock = threading.Lock()
-        self.replay = ReplayService(config, self.output, ROOT, camera=self.camera,
-                                    recording_ready=self.replay_recording_ready)
+        self.camera_lock = threading.RLock()
+        self.recording = VideoRecording(self)
+        self.replay = ReplayService(config, self.output, ROOT, camera=self.camera, recording_ready=self.replay_recording_ready, recording=self.recording)
         self.evaluation = EvaluationService(self)
         self.control = ProcessControl(self)
-        self.camera_lock = threading.RLock()
         self.preview_enabled = config.get('camera_preview_on_start', True) and config['mode'] != 'reference_only'
         self.camera_service = (CameraService(config, ROOT) if config['mode'] == 'legacy_http'
                                and config.get('camera_autostart', True) else None)
@@ -87,6 +88,7 @@ class Application:
         with self.replay.lock, self.camera_lock:
             if self.replay.recording_active():
                 raise ValueError('IDM 双视角录制尚未结束，请先停止回放并等待视频保存完成后再断开相机')
+            self.recording.stop()
             self.preview_enabled = False
             service = self.camera_service
             if service:
@@ -136,13 +138,13 @@ class Application:
     def asset(self, url):
         if not isinstance(url, str) or not url.startswith('/assets/'):
             raise ValueError('图像必须来自本控制台上传或保存的资源')
-        path = (self.output / url[len('/assets/'):]).resolve()
+        path = (self.output / unquote(url[len('/assets/'):])).resolve()
         if not path.is_relative_to(self.output) or not path.is_file():
             raise ValueError('资源不存在或越界')
         return path
 
     def url(self, path):
-        return '/assets/' + Path(path).resolve().relative_to(self.output).as_posix()
+        return '/assets/' + quote(Path(path).resolve().relative_to(self.output).as_posix(), safe='/')
 
     def upload(self, data):
         if not data or len(data) > MAX_BODY:
@@ -264,6 +266,8 @@ def _make_console_handler(app):
                 self.send_bytes(200, app.evaluation.export_csv(query['id'][0]).encode(), 'text/csv; charset=utf-8', {'Content-Disposition': 'attachment; filename="evaluation.csv"'})
             elif path == '/api/records':
                 self.reply(app.history())
+            elif path == '/api/recording/status':
+                self.reply(app.recording.status())
             elif path == '/api/frame':
                 if not app.preview_enabled:
                     raise ValueError('布局预览已关闭，相机已交给终端评测')
@@ -298,7 +302,7 @@ def _make_console_handler(app):
                 file = app.asset(path)
                 self.send_bytes(200, file.read_bytes(), mimetypes.guess_type(str(file))[0] or 'application/octet-stream')
             else:
-                files = {'/': 'index.html', '/app.js': 'app.js', '/style.css': 'style.css', '/comparison.mjs': 'comparison.mjs', '/replay.mjs': 'replay.mjs', '/evaluation.mjs': 'evaluation.mjs'}
+                files = {'/': 'index.html', '/app.js': 'app.js', '/style.css': 'style.css', '/comparison.mjs': 'comparison.mjs', '/replay.mjs': 'replay.mjs', '/evaluation.mjs': 'evaluation.mjs', '/recording.mjs': 'recording.mjs'}
                 if path not in files:
                     self.reply({'error': 'Not found'}, 404)
                     return
@@ -312,7 +316,7 @@ def _make_console_handler(app):
                 if origin and urlsplit(origin).netloc != self.headers.get('Host'):
                     self.reply({'error': '跨源写入被拒绝'}, 403)
                     return
-                if self.path.startswith(('/api/replay/', '/api/evaluation/')):
+                if self.path.startswith(('/api/replay/', '/api/evaluation/', '/api/recording/')):
                     import secrets
                     host = urlsplit('http://' + self.headers.get('Host', '')).hostname
                     allowed = app.config.get('replay', {}).get('allowed_hosts', ['localhost', '127.0.0.1', '::1'])
@@ -351,7 +355,11 @@ def _make_console_handler(app):
                 payload = json.loads(raw, parse_constant=reject_constant)
                 if not isinstance(payload, dict):
                     raise ValueError('需要 JSON 对象')
-                if path == '/api/evaluation/training-overlay':
+                if path == '/api/recording/start':
+                    self.reply(app.recording.start(payload))
+                elif path == '/api/recording/stop':
+                    self.reply(app.recording.stop(payload))
+                elif path == '/api/evaluation/training-overlay':
                     self.reply(app.training_overlay.start(payload), 202)
                 elif path == '/api/evaluation/control/server':
                     self.reply(app.control.start('server', payload))
@@ -395,7 +403,7 @@ def _make_console_handler(app):
                     self.reply(app.evaluation.update_result(payload))
                 elif path == '/api/replay/start':
                     self.reply(app.replay.start(payload.get('job_id'), payload.get('confirmed'),
-                                                payload.get('record_video', False)))
+                        payload.get('record_video', False), recording_name=payload.get('recording_name', ''), camera_id=payload.get('camera_id', '')))
                 elif path == '/api/replay/stop':
                     self.reply(app.replay.stop())
                 elif path == '/api/snapshot':

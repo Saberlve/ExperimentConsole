@@ -1,6 +1,6 @@
 const $ = id => document.getElementById(id);
 const ACTIVE = ['checking', 'starting', 'running', 'stopping'];
-const LABELS = {idle:'未运行', checking:'正在启动回放程序', starting:'正在初始化夹爪并移动到首点',
+const LABELS = {idle:'未运行', checking:'正在准备自动录制与回放', starting:'正在初始化夹爪并移动到首点',
   running:'正在下发动作', completed:'指令下发完成（未确认最终到位）', stopped:'已停止',
   stopping:'正在请求停止', stop_error:'停止未确认，请检查机械臂', error:'执行失败'};
 
@@ -25,8 +25,9 @@ export class ActionReplay {
     $('replay-start').onclick=async()=>{
       this.busy=true;this.buttons();
       try {
+        await this.refreshAuthorization();
         const result=await this.request('/api/replay/start',{job_id:this.job.id,confirmed:$('replay-confirm').checked,
-          record_video:$('replay-record-video').checked});
+          record_video:$('replay-record-video').checked,recording_name:$('recording-name').value,camera_id:$('camera').value});
         $('replay-confirm').checked=false;this.showStatus(result);
       } catch(error){$('replay-status').textContent=error.message;}
       finally{this.busy=false;this.buttons();}
@@ -88,7 +89,8 @@ export class ActionReplay {
   }
   showStatus(data){
     this.state=data.status;
-    $('replay-status').textContent=(LABELS[data.status]||data.status)+(data.error?'：'+data.error:'')+(data.stop_detail?' · '+data.stop_detail:'');
+    $('replay-status').textContent=(LABELS[data.status]||data.status)+(data.error?'：'+data.error:'')+(data.stop_detail?' · '+data.stop_detail:'')+
+      (data.recording_error?' · 录像保存异常：'+data.recording_error:'');
     $('replay-status').dataset.state=data.status;
     $('replay-log').textContent=(data.logs||[]).join('\n');
     const recording=data.recording;

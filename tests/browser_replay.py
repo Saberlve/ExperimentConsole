@@ -51,6 +51,7 @@ def main():
                 expect(page.locator('#action-summary')).to_contain_text('离线校验通过')
                 expect(page.locator('#action-download')).to_be_visible()
                 assert not adapter.launches
+                page.locator('#recording-name').fill('CSV自动录制')
                 expect(page.locator('#replay-start')).to_be_disabled()
                 page.locator('#replay-record-video').check()
                 page.locator('#replay-confirm').check()
@@ -75,6 +76,7 @@ def main():
                 video_url=page.locator('#replay-recording-files a').first.get_attribute('href')
                 response=page.request.get(f'http://127.0.0.1:{server.server_port}'+video_url)
                 assert response.ok and len(response.body())>100
+                expect(page.locator('#recording-videos a')).to_have_text(['CSV自动录制.mp4'])
                 assert len(adapter.stops)==1
                 # Start a second explicit run and let the fake command stream complete.
                 page.locator('#replay-confirm').check()
@@ -90,6 +92,7 @@ def main():
                 expect(page.locator('#replay-record-video')).to_be_checked()
                 expect(page.locator('#replay-recording-files a')).to_have_count(2)
                 page.locator('#replay-record-video').uncheck()
+                expect(page.locator('#recording-videos a')).to_have_text(['CSV自动录制.mp4','CSV自动录制_1.mp4'])
                 page.locator('#action-csv').set_input_files({'name':'bad.csv','mimeType':'text/csv','buffer':b'bad\n1\n2\n'})
                 expect(page.locator('#action-summary')).to_contain_text('转换失败')
                 expect(page.locator('#replay-start')).to_be_disabled()

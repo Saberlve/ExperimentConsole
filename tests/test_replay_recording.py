@@ -34,6 +34,8 @@ class ReplayRecordingTests(unittest.TestCase):
         self.app = Application(dict(mode='legacy_http', camera_autostart=False,
             output_dir=self.temp.name, datasets={}, replay={'enabled': True}))
         self.camera = camera_fixture()
+        # Isolate the synchronized dual-view recorder from independent single-camera recording.
+        self.app.replay.recording = None
         self.app.replay.camera = self.camera
         self.adapter = FakeReplayAdapter(ROOT, self.app.config)
         self.app.replay.adapter = self.adapter

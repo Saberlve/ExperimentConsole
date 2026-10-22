@@ -1,6 +1,7 @@
 import {VLAEvaluation} from '/evaluation.mjs';
 import {ActionReplay} from '/replay.mjs';
 import {RealtimeComparison} from '/comparison.mjs';
+import {RecordingPanel} from '/recording.mjs';
 const $ = id => document.getElementById(id);
 
 class CameraDrawer {
@@ -296,6 +297,7 @@ async function main(){
     $('reference-controls').hidden=isVla;
     $('comparison-panels').hidden=false;
     $('idm-camera-controls').hidden=page!=='idm';
+    $('recording-panel').hidden=page!=='idm';
     $('comparison-validation').hidden=isVla;
     if(isVla){$('alpha').value=50;$('show-reference').checked=true;$('alpha').dispatchEvent(new Event('input'));}
 
@@ -328,8 +330,9 @@ async function main(){
     if(e.dataTransfer.files.length!==1){message('请一次拖入一张首帧照片',true);return;}
     loadPhoto(e.dataTransfer.files[0]);
   });
-  $('episode-video').onchange=async()=>{
-    const file=$('episode-video').files[0];if(!file)return;
+  const loadVideo=async file=>{
+    if(!file||$('episode-video').disabled)return;
+    if(!/\.(mp4|mov|avi|mkv)$/i.test(file.name)){message('请选择或拖入 MP4 / MOV / AVI / MKV 视频',true);return;}
     if(file.size>256*1024*1024){message('Episode 视频超过 256 MiB，请使用数据集读取',true);return;}
     $('episode-video').disabled=true;$('video-status').textContent='正在上传 Episode 并提取视频首帧…';
     try{
@@ -341,6 +344,17 @@ async function main(){
     }catch(e){$('video-status').textContent='首帧提取失败：'+e.message;message(e.message,true);}
     finally{$('episode-video').disabled=false;}
   };
+  $('episode-video').onchange=()=>loadVideo($('episode-video').files[0]);
+  const videoDrop=$('video-drop');
+  videoDrop.onclick=()=>$('episode-video').click();
+  videoDrop.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();$('episode-video').click();}};
+  for(const event of ['dragenter','dragover'])videoDrop.addEventListener(event,e=>{e.preventDefault();videoDrop.classList.add('dragging');});
+  for(const event of ['dragleave','drop'])videoDrop.addEventListener(event,e=>{e.preventDefault();videoDrop.classList.remove('dragging');});
+  videoDrop.addEventListener('drop',e=>{
+    if(e.dataTransfer.files.length!==1){message('请一次拖入一个视频',true);return;}
+    loadVideo(e.dataTransfer.files[0]);
+  });
+  new RecordingPanel(status.mode);
   const inputs={};
   for(const kind of ['current','target'])$(kind+'-upload').onchange=async()=>{delete inputs[kind];$(kind+'-preview').hidden=true;try{inputs[kind]=await reference.upload($(kind+'-upload').files[0]);$(kind+'-preview').src=inputs[kind];$(kind+'-preview').hidden=false;message(kind+' 观测已上传');}catch(e){message(e.message,true);}};
   action('infer',async()=>{ $('result').textContent='运行中 · MOCK';try{const data=await api('/api/idm',{mode:'mock',current_image:inputs.current,target_image:inputs.target,state:JSON.parse($('state').value)});$('result').textContent=JSON.stringify(data,null,2);message('Mock 测试完成；未执行机器人动作');}catch(e){$('result').textContent='测试失败：'+e.message;throw e;}});

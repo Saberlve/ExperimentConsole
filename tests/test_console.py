@@ -32,6 +32,7 @@ class ConsoleTests(unittest.TestCase):
         self.url = f'http://127.0.0.1:{self.server.server_port}'
 
     def tearDown(self):
+        self.app.recording.close()
         self.server.shutdown()
         self.server.server_close()
         self.thread.join()
@@ -106,8 +107,26 @@ class ConsoleTests(unittest.TestCase):
             self.assertLess(blue, 20)
         self.assertEqual(self.request(result['url'].replace('.png', '.json'))[0], 200)
         self.assertFalse(list(self.root.glob('.episode-*')))
+
         self.assertEqual(self.request('/api/video-first-frame', b'invalid video')[0], 400)
         self.assertFalse(list(self.root.glob('.episode-*')))
+
+    def test_recording_http_auth_and_saved_asset(self):
+        headers = {'X-Replay-Token': self.app.replay.token}
+        self.assertEqual(self.request('/recording.mjs')[0], 200)
+        self.assertEqual(self.request('/api/recording/start', {'camera_id': 'demo'})[0], 403)
+        self.assertEqual(self.request('/api/recording/start', {'camera_id': 'demo'},
+                                     dict(headers, Origin='https://foreign.example'))[0], 403)
+        code, recording = self.request('/api/recording/start', {'camera_id': 'demo', 'name': '测试'}, headers)
+        self.assertEqual(code, 200)
+        self.assertTrue(recording['active'])
+        self.assertTrue(self.request('/api/recording/status')[1]['active'])
+        code, result = self.request('/api/recording/stop', {'name': '测试成品'}, headers)
+        self.assertEqual(code, 200)
+        self.assertEqual(result['last']['name'], '测试成品.mp4')
+        code, data = self.request(result['last']['url'])
+        self.assertEqual(code, 200)
+        self.assertGreater(len(data), 0)
 
     def test_output_cannot_overlap_dataset(self):
         config = self.root / 'config.json'

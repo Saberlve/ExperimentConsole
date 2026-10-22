@@ -283,6 +283,20 @@ python3 -m tests.browser_replay
 
 硬件无关验证：`python -m unittest tests.test_evaluation tests.test_camera_service tests.test_console -v`。真实相机释放/重连仍需在机器人现场验证。
 
+## IDM 视频拖入与录制
+
+在 `#idm` 页面，将 MP4 / MOV / AVI / MKV 视频拖入独立的视频窗口，或点击选择视频，即可自动提取首帧并加载为对齐参考图。视频最大 256 MiB。
+
+在“CSV 执行 · 自动录制”中只需填写录制类名，再按原流程上传并执行 CSV；执行时自动开始录制，执行完成、失败或点击“停止回放”后自动保存 MP4，无需手动开始或保存录像。录制类名会在浏览器中记住。录制使用当前选择的相机，未开启预览时自动连接相机；未选择相机时优先使用全景相机。录像就绪后才启动回放程序，包含初始化和移动至首点的过程。
+
+每次启动控制台服务创建一个 `output_dir/recordings/启动时间_随机标识/` 目录，本次服务录制的视频均保存在此目录；同名视频按 `类名.mp4`、`类名_1.mp4`、`类名_2.mp4` 递增，不覆盖已有文件。页面显示实际保存目录及下载链接。
+
+录制由后台执行，刷新页面不中断录像，仍可点击“停止回放”结束回放并自动保存；断开相机、正常退出服务（Ctrl+C / SIGTERM）也会结束并保存当前录像。录像使用当前相机的原始预览画面，以 15 FPS 编码，不包含参考图叠加。强制杀死进程或断电时无法保证 MP4 完整。
+
+POST `/api/replay/start` 携带 `recording_name` 与可选 `camera_id`，后台管理录制的开始与保存；GET `/api/recording/status` 查看状态及本次服务的视频。录制底层接口 POST `/api/recording/start`、`/api/recording/stop` 继续保留，页面不再显示手动录制按钮。写请求使用 `X-Replay-Token`。
+
+验证：`python -m unittest tests.test_recording tests.test_console -v`；`python -m tests.browser_recording`（需要 Playwright 和 Chrome）。
+
 ## Optional model process controls
 
 Pass `--control-config /absolute/path/profiles.json` to enable server-owned argv profiles. The parent repository supplies model-specific commands; the console remains independent. HTTP requests select a configured model and existing checkpoint/YAML paths, never shell commands. Starts and stops use the existing local host/origin/token checks. Logs and the persistent software-stop latch live under the ignored output directory.
