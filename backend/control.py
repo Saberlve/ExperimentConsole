@@ -11,6 +11,14 @@ import threading
 import time
 
 
+def eval_config_root(profile):
+    if profile.get('eval_config_root'):
+        return Path(profile['eval_config_root']).expanduser().resolve()
+    if profile.get('eval_config'):
+        return Path(profile['eval_config']).expanduser().resolve().parent
+    return None
+
+
 class ProcessControl:
     def __init__(self, app):
         self.app = app
@@ -35,6 +43,10 @@ class ProcessControl:
         job = self.jobs.get(kind)
         return bool(job and job['process'].poll() is None)
 
+    def eval_config_roots(self):
+        return [root for profile in self.options.get('models', {}).values()
+                if (root := eval_config_root(profile)) is not None]
+
     def status(self):
         with self.lock:
             jobs = {}
@@ -50,15 +62,20 @@ class ProcessControl:
                     recovery_error=job.get('recovery_error', ''))
                 if kind == 'server':
                     jobs[kind]['ready'] = self.server_ready()
-            models = {k:dict(checkpoint=v.get('checkpoint', ''), eval_config=v.get('eval_config', ''),
-                            eval_configs=[str(p.resolve()) for p in sorted(Path(v.get('eval_config_root') or Path(v.get('eval_config', '')).expanduser().parent).expanduser().rglob('*'))
-                                          if p.is_file() and p.suffix.lower() in ('.yaml', '.yml')] if v.get('eval_config_root') or v.get('eval_config') else [],
-                            unavailable=v.get('unavailable', '')) for k,v in self.options.get('models', {}).items()}
+            models = {}
+            for model, profile in self.options.get('models', {}).items():
+                root = eval_config_root(profile)
+                paths = [str(p.resolve()) for p in sorted(root.rglob('*'))
+                         if p.is_file() and p.suffix.lower() in ('.yaml', '.yml')
+                         and p.resolve().is_relative_to(root)] if root else []
+                models[model] = dict(checkpoint=profile.get('checkpoint', ''),
+                    eval_config=profile.get('eval_config', ''), eval_config_root=str(root) if root else '',
+                    eval_configs=paths, unavailable=profile.get('unavailable', ''))
             for model, profile in models.items():
                 profile['eval_configs'].extend(str(p.resolve()) for p in sorted(
                     (self.app.output / 'eval_configs' / model).rglob('*.yaml')) if p.is_file())
                 source = self.options['models'][model]
-                root = Path(source.get('eval_config_root') or Path(source.get('eval_config') or '.').parent).expanduser().resolve()
+                root = eval_config_root(source) or Path('.').resolve()
                 profile['eval_config_root'] = str(root)
                 profile['eval_configs'] = sorted(set(profile['eval_configs']))
                 profile['eval_config_catalog'] = []

@@ -40,6 +40,20 @@ class EvaluationTests(unittest.TestCase):
     def run_record(self,model='ACT',suite=None):
         return self.service.create_run(dict(suite_id=(suite or self.suite)['id'],model=model,checkpoint='/ckpt/'+model,round='round-1'))
 
+    def test_new_round_reads_nested_task_config_from_configured_root(self):
+        external = tempfile.TemporaryDirectory()
+        self.addCleanup(external.cleanup)
+        root = Path(external.name) / 'FTP1'
+        source = root / 'charger_press' / 'FTP1_charger_press.yaml'
+        source.parent.mkdir(parents=True)
+        source.write_text('deployment_profile: xarm7_eef_ftp1\naction_space: eef10\nfps: 15\n')
+        self.app.control.options['models'] = {'FTP1': dict(
+            eval_config=str(root / 'egg_pick/default.yaml'), eval_config_root=str(root))}
+        record = self.service.create_run(dict(suite_id=self.suite['id'],model='FTP1',
+            checkpoint='/ckpt/FTP1',round='nested',eval_config=str(source)))
+        self.assertEqual(Path(record['eval_config']).read_text(), source.read_text())
+        self.assertEqual(record['eval_config_source'], str(source))
+
     def test_delete_run_removes_only_selected_record_and_survives_restart(self):
         run, other = self.run_record(), self.run_record('pi05')
         result = self.service.delete_run(dict(run_id=run['id'], revision=run['revision'], confirmed=True))

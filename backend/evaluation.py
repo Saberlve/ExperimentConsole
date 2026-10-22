@@ -286,8 +286,7 @@ class EvaluationService:
                 roots = [(self.app.output / 'eval_configs').resolve(), (self.root / 'runs').resolve()]
                 if self.app.config.get('main_repo_root'):
                     roots.append(Path(self.app.config['main_repo_root']).resolve())
-                roots.extend(Path(p['eval_config']).expanduser().resolve().parent
-                             for p in self.app.control.options.get('models', {}).values() if p.get('eval_config'))
+                roots.extend(self.app.control.eval_config_roots())
                 if file.suffix.lower() not in ('.yaml', '.yml') or not any(file.is_relative_to(root) for root in roots):
                     raise ValueError('请选择已有评测 YAML 或提供编辑后的配置内容')
                 if file.stat().st_size > 262144:

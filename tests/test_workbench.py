@@ -191,6 +191,24 @@ class WorkbenchHTTPTest(unittest.TestCase):
         self.app.control.options['models'] = {'ACT': {}}
         self.assertIn(first['path'], self.app.control.status()['models']['ACT']['eval_configs'])
 
+    def test_nested_evaluation_config_can_be_read_from_configured_root(self):
+        from urllib.parse import quote
+        external = tempfile.TemporaryDirectory()
+        self.addCleanup(external.cleanup)
+        root = Path(external.name) / 'FTP1'
+        file = root / 'charger_press' / 'FTP1_charger_press.yaml'
+        file.parent.mkdir(parents=True)
+        file.write_text('fps: 15\n')
+        self.app.control.options['models'] = {'FTP1': dict(
+            eval_config=str(root / 'egg_pick/default.yaml'), eval_config_root=str(root))}
+        result = json.loads(self.get('/api/evaluation/config?path=' + quote(str(file))))
+        self.assertEqual(result['content'], file.read_text())
+        outside = Path(external.name) / 'outside.yaml'
+        outside.write_text('fps: 15\n')
+        with self.assertRaises(HTTPError) as error:
+            self.get('/api/evaluation/config?path=' + quote(str(outside)))
+        self.assertEqual(error.exception.code, 400)
+
     def test_saved_first_frame_sources_load_sort_and_save_suite(self):
         from PIL import Image
         folder = self.repo / 'first_frames'

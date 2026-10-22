@@ -48,6 +48,21 @@ class ControlsTest(unittest.TestCase):
             self.assertFalse(any('/' + ('N0' if model == 'ACT' else 'ACT') + '/' in e['path'] for e in tasks))
         self.assertIn(str(saved), status['ACT']['eval_configs'])
 
+    def test_config_catalog_recurses_within_the_configured_model_root(self):
+        root = self.root / 'eval' / 'FTP1'
+        default = root / 'egg_pick' / 'FTP1_egg_pick.yaml'
+        charger = root / 'charger_press' / 'FTP1_charger_press.YML'
+        for file in (default, charger, self.root / 'eval/ACT/other.yaml'):
+            file.parent.mkdir(parents=True, exist_ok=True)
+            file.write_text('fps: 15\n')
+        (root / 'README.md').write_text('documentation')
+        (root / 'escape.yaml').symlink_to(self.root / 'eval/ACT/other.yaml')
+        self.control.options['models'] = {'FTP1': dict(eval_config=str(default), eval_config_root=str(root))}
+        profile = self.control.status()['models']['FTP1']
+        self.assertEqual(set(profile['eval_configs']), {str(default), str(charger)})
+        self.assertEqual(profile['eval_config_root'], str(root))
+        self.assertEqual(self.control.eval_config_roots(), [root])
+
     def test_server_and_checkpoint_check_use_current_saved_round_yaml(self):
         for model, profile in (('ACT', 'xarm7_eef10'), ('pi05', 'xarm7_eef10'),
                                ('N0', 'xarm7_eef_n0vtla'), ('FTP1', 'xarm7_eef_ftp1')):

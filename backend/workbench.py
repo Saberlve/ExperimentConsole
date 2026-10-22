@@ -60,8 +60,7 @@ def make_workbench_handler(app, manager=None):
                     roots = [(app.output / 'eval_configs').resolve(), (app.evaluation.root / 'runs').resolve()]
                     if manager is not None:
                         roots.append(manager.repo.resolve())
-                    roots.extend(Path(p['eval_config']).expanduser().resolve().parent
-                                 for p in app.control.options.get('models', {}).values() if p.get('eval_config'))
+                    roots.extend(app.control.eval_config_roots())
                     if file.suffix.lower() not in ('.yaml', '.yml') or not any(file.is_relative_to(root) for root in roots):
                         raise ValueError('请选择主仓库或已配置评测目录中的 YAML 文件')
                     if file.stat().st_size > 262144:
