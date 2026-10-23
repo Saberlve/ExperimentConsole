@@ -22,3 +22,4 @@ body{padding-top:68px}#global-safety-bar{position:fixed;top:0;left:0;right:0;z-i
 #ve-config option.ve-base-config{background:#245c49;color:#fff;font-weight:700}
 
 .ve-trial-results{min-width:0;max-width:100%;overflow:hidden}.ve-trial-results ol{display:flex;flex-wrap:nowrap;gap:8px;list-style:none;padding:0 0 6px;margin:10px 0;max-width:100%;overflow-x:auto}.ve-trial-results-row>td{max-width:0}.ve-trial-results li{flex:0 0 auto;white-space:nowrap;padding:6px 10px;border:1px solid #94a3b8;border-radius:6px;background:#f1f5f9;color:#334155}.ve-trial-results li strong{font-size:13px}.ve-trial-results li p{margin:4px 0 0;color:inherit}
+.ve-round-name{display:block;font-size:14px;line-height:1.6}.ve-model-details{margin-top:6px}.ve-model-details summary{font-size:12px}.ve-model-details p{margin:6px 0;font-size:12px}.ve-model-details code{white-space:normal;overflow-wrap:anywhere}
