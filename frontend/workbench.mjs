@@ -1,5 +1,6 @@
 import '/app.js';
 import {initTraining} from '/training.mjs';
+import {checkpointName} from '/evaluation.mjs';
 const $=id=>document.getElementById(id);
 const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let catalog,selectedModel='pi05';
@@ -23,8 +24,8 @@ function checkpointOptions(){
   const previous=select.value;
   $('ve-checkpoint-root').textContent=`默认检查点目录：${catalog.root}`;
   select.replaceChildren(new Option(entries.length?'请选择检查点':'此模型目录暂无检查点',''));
-  for(const item of entries){const option=new Option(`${item.run} / ${item.name}${item.metadata_ready?'':' · 元数据不完整'}`,item.path);select.add(option);}
-  if(previous&&!entries.some(item=>item.path===previous))select.add(new Option(previous,previous));
+  for(const item of entries){const option=new Option(`${item.run}${item.metadata_ready?'':' · 元数据不完整'}`,item.path);option.title=item.path;select.add(option);}
+  if(previous&&!entries.some(item=>item.path===previous))select.add(new Option(checkpointName(previous),previous));
   select.value=previous;
 }
 function useCheckpoint(path){
@@ -32,6 +33,7 @@ function useCheckpoint(path){
   if(!item)return;
   $('ve-model').value=item.model;$('ve-model').dispatchEvent(new Event('change'));
   $('ve-checkpoint').value=item.path;checkpointOptions();
+  $('ve-checkpoint').dispatchEvent(new Event('change'));
   location.hash='vla';
   message(`已选择 ${item.model_label} / ${item.run} / ${item.name}。选择测试集并创建新评测轮次后，再启动服务。`);
 }
