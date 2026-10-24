@@ -481,6 +481,7 @@ class ProcessControl:
                 raise
             record = self.app.evaluation.read('runs', record['id'])
             record.pop('metrics', None)
+            record['trials'][record['cursor']]['record_video'] = bool(self.jobs['evaluation'].get('recording'))
             record['trials'][record['cursor']]['log_path'] = str(self.jobs['evaluation']['log'])
             record['revision'] += 1
             self.app.evaluation.write('runs', record)

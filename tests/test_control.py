@@ -498,6 +498,22 @@ class TrialLifecycleTest(unittest.TestCase):
     def finish(self,exit_run=False):
         return self.control.finish_trial(dict(run_id=self.run['id'],revision=self.run['revision'],result='success'),exit_run=exit_run)
 
+    def test_web_recording_choice_only_applies_to_current_trial_without_changing_yaml(self):
+        before = Path(self.run['eval_config']).read_text()
+        with patch('backend.control.ProcessControl._probe_server'), patch.object(self.control, '_spawn', wraps=self.control._spawn) as spawn:
+            self.run = self.control.start_trial(dict(run_id=self.run['id'], revision=self.run['revision'], record_video=True))
+        self.assertEqual(spawn.call_args.args[3]['VLARMORY_RECORD_VIDEO'], '1')
+        self.assertTrue(self.run['trials'][0]['record_video'])
+        self.assertEqual(Path(self.run['eval_config']).read_text(), before)
+        self.run = self.finish()
+        with patch('backend.control.ProcessControl._probe_server'), patch.object(self.control, '_spawn', wraps=self.control._spawn) as spawn:
+            self.run = self.control.start_trial(dict(run_id=self.run['id'], revision=self.run['revision']))
+        self.assertEqual(spawn.call_args.args[3]['VLARMORY_RECORD_VIDEO'], '0')
+        self.assertFalse(self.run['trials'][1]['record_video'])
+        self.assertTrue(self.run['trials'][0]['record_video'])
+        self.assertNotIn('recording', self.run['trials'][1])
+        self.assertEqual(Path(self.run['eval_config']).read_text(), before)
+
     def test_recording_yaml_routes_unique_directory_and_persists_video_links(self):
         import json
         with patch('backend.control.ProcessControl._probe_server'), patch.object(self.control, '_spawn', wraps=self.control._spawn) as spawn:

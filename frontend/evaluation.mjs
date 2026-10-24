@@ -47,7 +47,7 @@ export class VLAEvaluation {
 <label>手动填写 checkpoint（终端评测 / 离线记录）<input id="ve-manual-checkpoint" placeholder="填写 checkpoint 路径或标识"></label>
 <details id="ve-config-editor"><summary id="ve-config-editor-title">查看 / 修改评测 YAML（可选）</summary><p id="ve-config-path"></p><div class="ve-code-editor"><div class="ve-code-gutter" aria-hidden="true"><pre id="ve-config-lines">1</pre></div><div class="ve-code-body"><pre id="ve-config-highlight" aria-hidden="true"></pre><textarea id="ve-config-content" aria-label="评测 YAML 编辑器" spellcheck="false" autocapitalize="off" autocomplete="off" wrap="off" disabled></textarea></div></div><p id="ve-config-state">请选择评测配置。</p><p>执行步数和机器人参数可修改，下一次启动 / 重试时保存并生效，无需重启模型服务。deployment_profile 或 action_space 修改后需重启模型服务。single_task 和 fps 必须与训练配置一致；action_chunk_size 须匹配模型输出长度，或填 null 自动读取。</p></details>
 <button id="ve-create-run" class="primary">保存配置并新建评测轮次</button>
-</details><section id="ve-process"><h3>3 · 启动模型服务</h3><p>完成第 2 步后启动服务；然后在第 4 步对齐布局并开始评测。</p><div class="ve-actions"><button id="ve-server-start">启动模型服务</button><button id="ve-server-stop">停止模型服务</button><button id="ve-unlock">已人工检查，解除启动锁定</button></div><p>软件急停发送控制器停止指令；网络或控制器异常时请使用实体急停。解除锁定不会使机器人运动。</p><p id="ve-process-status"></p><details><summary>启动日志</summary><pre id="ve-process-log" style="white-space:pre-wrap;max-height:260px;overflow:auto"></pre></details></section><section id="ve-current" class="ve-step" hidden><h3>4 · 对齐布局，启动本条评测</h3><p id="ve-run-meta"></p><div class="ve-actions"><label>选择测试小项<select id="ve-trial-select"></select></label><button id="ve-select-trial">切换到此项</button></div><p>可直接选择第 3 项等指定布局；切换后对齐场景，再启动评测。重测已有结果时，原结果保留在历史记录中。</p><strong id="ve-progress"></strong><p id="ve-current-label"></p><img id="ve-layout" alt="当前样本的固定布局图" style="max-width:100%;max-height:420px"><p id="ve-instructions"></p><p>点击左侧“开启 / 刷新相机”，按参考图摆好物体。“启动本条评测”会自动释放预览相机。</p><div id="ve-alignment"></div><label><input type="checkbox" id="ve-record-video"> 评测时录制双视角视频（15 FPS）</label><p id="ve-video-status" role="status"></p><div id="ve-video-links"></div><button id="ve-eval-start" class="primary">启动本条评测（自动释放相机）</button><section class="ve-trial-console"><h3>本条评测 · 状态与日志</h3><p id="ve-trial-status" role="status">尚未启动评测。</p><pre id="ve-trial-log" tabindex="0" aria-label="本条评测日志">等待启动。</pre></section><h3>5 · 结束后记录结果</h3><label>本样本备注 / 日志路径<textarea id="ve-note"></textarea></label>
+</details><section id="ve-process"><h3>3 · 启动模型服务</h3><p>完成第 2 步后启动服务；然后在第 4 步对齐布局并开始评测。</p><div class="ve-actions"><button id="ve-server-start">启动模型服务</button><button id="ve-server-stop">停止模型服务</button><button id="ve-unlock">已人工检查，解除启动锁定</button></div><p>软件急停发送控制器停止指令；网络或控制器异常时请使用实体急停。解除锁定不会使机器人运动。</p><p id="ve-process-status"></p><details><summary>启动日志</summary><pre id="ve-process-log" style="white-space:pre-wrap;max-height:260px;overflow:auto"></pre></details></section><section id="ve-current" class="ve-step" hidden><h3>4 · 对齐布局，启动本条评测</h3><p id="ve-run-meta"></p><div class="ve-actions"><label>选择测试小项<select id="ve-trial-select"></select></label><button id="ve-select-trial">切换到此项</button></div><p>可直接选择第 3 项等指定布局；切换后对齐场景，再启动评测。重测已有结果时，原结果保留在历史记录中。</p><strong id="ve-progress"></strong><p id="ve-current-label"></p><img id="ve-layout" alt="当前样本的固定布局图" style="max-width:100%;max-height:420px"><p id="ve-instructions"></p><p>点击左侧“开启 / 刷新相机”，按参考图摆好物体。“启动本条评测”会自动释放预览相机。</p><div id="ve-alignment"></div><label><input type="checkbox" id="ve-record-video"> 录制本条评测的双视角视频（15 FPS）</label><p id="ve-video-status" role="status"></p><div id="ve-video-links"></div><button id="ve-eval-start" class="primary">启动本条评测（自动释放相机）</button><section class="ve-trial-console"><h3>本条评测 · 状态与日志</h3><p id="ve-trial-status" role="status">尚未启动评测。</p><pre id="ve-trial-log" tabindex="0" aria-label="本条评测日志">等待启动。</pre></section><h3>5 · 结束后记录结果</h3><label>本样本备注 / 日志路径<textarea id="ve-note"></textarea></label>
 <label>本条结果<select id="ve-trial-result"><option value="success" selected>成功</option><option value="failure">失败</option><option value="aborted">中止</option></select></label><div class="ve-actions"><button id="ve-trial-end">结束本条（复位并下一张）</button><button id="ve-run-exit">退出并保存评测结果</button></div>
 <details id="ve-manual-controls"><summary>在终端运行 VLA / 仅手动记录结果</summary><p>先点击左侧“释放相机供 VLA 使用”，再在终端运行评测。手动标记开始 → 仅保存本条结果 → 继续下一张。手动记录不会停止或复位机械臂；请在终端完成控制操作。</p><div class="ve-actions"><button id="ve-manual-start">手动标记开始</button><button id="ve-manual-result">仅保存本条结果</button><button id="ve-next">继续下一张（不复位）</button></div></details>
 <details id="ve-result-editor" hidden><summary id="ve-result-editor-title">查看 / 修改历史结果</summary><p>选中已记录的样本修改结果和备注，保存后自动更新成功率与导出记录。</p><label>已记录的样本<select id="ve-result-trial"></select></label><img id="ve-result-layout" alt="所选历史样本的布局图" style="max-width:100%;max-height:260px"><label>修改结果<select id="ve-corrected-result"><option value="success">成功</option><option value="failure">失败</option><option value="aborted">中止</option></select></label><label>备注<textarea id="ve-corrected-note"></textarea></label><button id="ve-save-result">保存结果修改</button></details>
@@ -128,6 +128,7 @@ export class VLAEvaluation {
         this.message('正在请求启动评测，请查看按钮下方的状态与日志…');
         const edited=this.configDirty||($('ve-config').value&&this.configEditorPath!==this.run.eval_config);
         this.run=await this.api('/api/evaluation/start-trial',{run_id:this.run.id,revision:this.run.revision,
+          record_video:$('ve-record-video').checked,
           ...(edited&&this.run.trials[this.run.cursor].status==='running'?{restart_current:true}:{}),
           ...(edited?{eval_config_content:$('ve-config-content').value}:{})});
         this.configDirty=false;delete (this.configDrafts||{})[this.configEditorPath];
@@ -389,22 +390,27 @@ export class VLAEvaluation {
       this.configEditorRun=null;
     }
   }
+  videoTrialKey(){return this.run?this.run.id+':'+this.run.cursor:null;}
   setVideoRecording(enabled){
-    this.requireLoadedConfig();
-    const editor=$('ve-config-content'),line='record_video: '+enabled;
-    editor.value=/^record_video\s*:/m.test(editor.value)?editor.value.replace(/^record_video\s*:.*$/m,line):editor.value.replace(/\s*$/,'')+'\n'+line+'\n';
-    editor.oninput();
+    this.videoChoiceKey=this.videoTrialKey();
+    this.videoChoice=!!enabled;
+    this.syncVideoSwitch();
   }
   syncVideoSwitch(){
+    const key=this.videoTrialKey();
+    if(this.videoChoiceKey!==key){this.videoChoiceKey=key;this.videoChoice=undefined;}
+    const trial=this.run?.trials[this.run.cursor];
     const match=$('ve-config-content').value.match(/^record_video\s*:\s*(true|false)\s*(?:#.*)?$/m);
-    $('ve-record-video').checked=match?match[1]==='true':!!this.configVideoDefault;
+    const fallback=match?match[1]==='true':!!this.configVideoDefault;
+    $('ve-record-video').checked=this.videoChoice??(trial?.status==='running'?
+      trial.record_video??!!trial.recording:fallback);
   }
   renderVideoStatus(){
     const job=this.controlState?.jobs.evaluation;
     const current=job?.run_id===this.run?.id&&job?.trial_index===this.run?.cursor;
     const recording=current&&job.recording?job.recording:this.run?.trials[this.run.cursor]?.recording;
     const labels={preparing:'正在准备录像',recording:'正在录制双视角视频 · 15 FPS',saved:'双视角录像已保存',error:'录像失败',unconfirmed:'评测已结束，录像正在收尾或已中断，请检查已保存片段'};
-    $('ve-video-status').textContent=recording?(labels[recording.status]||recording.status)+(recording.error?'：'+recording.error:''):'默认关闭；勾选后从本条评测启动时录制，设置随评测 YAML 保存。';
+    $('ve-video-status').textContent=recording?(labels[recording.status]||recording.status)+(recording.error?'：'+recording.error:''):'勾选后从本条评测启动时录制；只对本条生效，下一条恢复配置默认值（默认关闭）。';
     const errors=(recording?.views||[]).filter(v=>v.error).map(v=>v.key+'：'+v.error);
     if(errors.length)$('ve-video-status').textContent+=' · '+errors.join('；');
     $('ve-video-links').innerHTML=(recording?.videos||[]).map(v=>`<a href="${esc(v.url)}" target="_blank" rel="noopener">${esc(v.label)}视频</a>`).join(' · ');

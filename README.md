@@ -305,12 +305,15 @@ The UI supports starting/stopping the owned policy server and starting a previou
 
 ### VLA 评测双视角录像（默认关闭）
 
-在“启动本条评测”上方勾选“评测时录制双视角视频（15 FPS）”，会把
-`record_video: true` 保存到当前轮次的评测 YAML；取消勾选保存为 `false`。
-设置从下次启动本条评测生效，运行中不能切换。也可直接编辑评测 YAML：
+在“启动本条评测”上方勾选“录制本条评测的双视角视频（15 FPS）”。
+网页开关仅控制当前这一条，在启动请求中传入 `record_video`，不会修改评测 YAML。
+切换到下一条时恢复配置默认值（缺省关闭）；同一轮次可以第一条录制、第二条不录制。
+运行中不能切换，开始评测后会显示本条实际是否开启录像。
+
+也可在评测 YAML 设置每条的默认值，网页开关可以覆盖：
 
 ```yaml
-record_video: true  # 缺省 false
+record_video: false  # 缺省 false；仅作为网页每条开关的初始值
 ```
 
 控制台配置 `vla_record_video` 也可设置默认值（发布配置为 `false`），评测 YAML
