@@ -65,7 +65,12 @@ def make_workbench_handler(app, manager=None):
                         raise ValueError('请选择主仓库或已配置评测目录中的 YAML 文件')
                     if file.stat().st_size > 262144:
                         raise ValueError('评测配置文件超过 256 KiB')
-                    return self.reply(dict(path=str(file), content=file.read_text(encoding='utf-8')))
+                    import yaml
+                    content = file.read_text(encoding='utf-8')
+                    parsed_config = yaml.safe_load(content)
+                    return self.reply(dict(path=str(file), content=content,
+                        record_video=parsed_config.get('record_video', app.config.get('vla_record_video', False))
+                        if isinstance(parsed_config, dict) else False))
                 match = re.fullmatch(r'/api/training/experiments/([A-Za-z0-9_-]+)/config', path)
                 if match:
                     if manager is None:

@@ -498,6 +498,34 @@ class TrialLifecycleTest(unittest.TestCase):
     def finish(self,exit_run=False):
         return self.control.finish_trial(dict(run_id=self.run['id'],revision=self.run['revision'],result='success'),exit_run=exit_run)
 
+    def test_recording_yaml_routes_unique_directory_and_persists_video_links(self):
+        import json
+        with patch('backend.control.ProcessControl._probe_server'), patch.object(self.control, '_spawn', wraps=self.control._spawn) as spawn:
+            self.run = self.control.start_trial(dict(run_id=self.run['id'], revision=self.run['revision'],
+                eval_config_content='fps: 15\nrecord_video: true\n'))
+        env = spawn.call_args.args[3]
+        self.assertEqual(env['VLARMORY_RECORD_VIDEO'], '1')
+        recording = self.run['trials'][0]['recording']
+        directory = Path(env['VLARMORY_VIDEO_DIR'])
+        self.assertEqual(str(directory), recording['directory'])
+        self.assertTrue(directory.is_relative_to(self.root / 'vla_evaluations/runs' / self.run['id']))
+        directory.mkdir(parents=True)
+        (directory / 'view_1.mp4').write_bytes(b'fixture video')
+        (directory / 'view_2.mp4').write_bytes(b'fixture video')
+        (directory / 'recording.json').write_text(json.dumps(dict(status='saved', views=[], fps=15)))
+        status = self.control.status()['jobs']['evaluation']['recording']
+        self.assertEqual(status['status'], 'saved')
+        self.assertEqual(len(status['videos']), 2)
+        self.assertTrue(all(self.app.asset(v['url']).is_file() for v in status['videos']))
+        self.run = self.finish()
+        self.assertEqual(self.run['trials'][0]['recording']['status'], 'saved')
+        with patch('backend.control.ProcessControl._probe_server'), patch.object(self.control, '_spawn', wraps=self.control._spawn) as spawn:
+            self.run = self.control.start_trial(dict(run_id=self.run['id'], revision=self.run['revision'],
+                eval_config_content='fps: 15\nrecord_video: false\n'))
+        self.assertEqual(spawn.call_args.args[3]['VLARMORY_RECORD_VIDEO'], '0')
+        self.assertNotIn('recording', self.run['trials'][1])
+        self.assertEqual(len(self.run['trials'][0]['recording_attempts']), 1)
+
     def test_end_saves_resets_advances_and_connects_camera(self):
         import json
         self.start();self.assertTrue(self.control.active('evaluation'))

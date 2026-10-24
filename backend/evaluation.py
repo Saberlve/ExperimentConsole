@@ -329,11 +329,28 @@ class EvaluationService:
             self.write('runs', record)
             return record
 
+    def recording_status(self, recording, finished=False):
+        directory = Path(recording['directory'])
+        result = dict(recording)
+        try:
+            data = json.loads((directory / 'recording.json').read_text())
+            result.update(status=data['status'], error=data.get('error'), views=data.get('views', []))
+        except (OSError, ValueError, KeyError):
+            pass
+        if finished and result.get('status') in ('preparing', 'recording'):
+            result['status'] = 'unconfirmed'
+        result['videos'] = [dict(label=label, url=self.app.url(directory / name))
+            for name, label in (('view_1.mp4', '第三人称视角'), ('view_2.mp4', '腕部视角'))
+            if (directory / name).is_file()]
+        return result
+
     def summary(self, record):
         statuses = [t['status'] for t in record['trials']]
         success, failure = statuses.count('success'), statuses.count('failure')
         completed = success + failure
-        return dict(record, metrics=dict(total=len(statuses), success=success, failure=failure,
+        return dict(record, trials=[dict(t, **({'recording': self.recording_status(t['recording'],
+                    finished=t['status'] in ('success', 'failure', 'aborted') or bool(t.get('failed_attempts')))}
+                    if t.get('recording') else {})) for t in record['trials']], metrics=dict(total=len(statuses), success=success, failure=failure,
                     aborted=statuses.count('aborted'), pending=statuses.count('pending'), running=statuses.count('running'),
                     completed=completed, success_rate=success/completed if completed else None,
                     all_scored=completed==len(statuses)))

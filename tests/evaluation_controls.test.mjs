@@ -113,3 +113,26 @@ test('edited running trial can restart, while stop/reset and other jobs still bl
     assert.equal(element('ve-eval-start').disabled,true);
   }finally{globalThis.document=previous;}
 });
+
+
+test('video switch edits the saved YAML and reflects config defaults',()=>{
+  const oldDocument=globalThis.document,elements=new Map();
+  const element=id=>{if(!elements.has(id))elements.set(id,{value:'',checked:false});return elements.get(id);};
+  globalThis.document={getElementById:element};
+  try{
+    const view=Object.create(VLAEvaluation.prototype);
+    view.requireLoadedConfig=()=>{};
+    let edits=0;element('ve-config-content').oninput=()=>{edits++;view.syncVideoSwitch();};
+    element('ve-config-content').value='fps: 15\n';
+    view.syncVideoSwitch();assert.equal(element('ve-record-video').checked,false);
+    view.setVideoRecording(true);
+    assert.match(element('ve-config-content').value,/^record_video: true$/m);
+    assert.equal(element('ve-record-video').checked,true);
+    view.setVideoRecording(false);
+    assert.match(element('ve-config-content').value,/^record_video: false$/m);
+    assert.equal((element('ve-config-content').value.match(/record_video:/g)||[]).length,1);
+    assert.equal(element('ve-record-video').checked,false);assert.equal(edits,2);
+    view.configVideoDefault=true;element('ve-config-content').value='fps: 15\n';
+    view.syncVideoSwitch();assert.equal(element('ve-record-video').checked,true);
+  }finally{globalThis.document=oldDocument;}
+});

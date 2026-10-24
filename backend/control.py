@@ -60,6 +60,8 @@ class ProcessControl:
                     log_path=str(job['log']), trial_index=job.get('trial_index'),
                     recovering=job.get('recovering', False), recovered=job.get('recovered', False),
                     recovery_error=job.get('recovery_error', ''))
+                if job.get('recording'):
+                    jobs[kind]['recording'] = self.app.evaluation.recording_status(job['recording'], finished=p.poll() is not None)
                 if kind == 'server':
                     jobs[kind]['ready'] = self.server_ready()
             models = {}
@@ -93,7 +95,8 @@ class ProcessControl:
                         model=owner or model))
                 profile['eval_configs'] = [entry['path'] for entry in profile['eval_config_catalog']]
             return dict(enabled=self.enabled, models=models, jobs=jobs, stopped=self.stopped,
-                        stopping=self.stopping.is_set(), stop_detail=self.stop_detail)
+                        stopping=self.stopping.is_set(), stop_detail=self.stop_detail,
+                        record_video_default=self.app.config.get('vla_record_video', False))
 
     def server_ready(self):
         job = self.jobs.get('server')
@@ -287,6 +290,13 @@ class ProcessControl:
                     if result.returncode:
                         raise ValueError(result.stderr[-2000:] or result.stdout[-2000:])
                     validated.add(validation_key)
+                import yaml
+                recording_config = yaml.safe_load(config.read_text())
+                recording_enabled = payload.get('record_video',
+                    (recording_config if isinstance(recording_config, dict) else {}).get(
+                        'record_video', self.app.config.get('vla_record_video', False)))
+                if type(recording_enabled) is not bool:
+                    raise ValueError('record_video 必须是布尔值')
                 self.app.release_preview()
                 values['eval_config'] = str(config)
             else:
@@ -305,9 +315,25 @@ class ProcessControl:
             command = [x.format(**values) for x in profile[kind]]
             folder = self.app.output / 'vla_evaluations/runs' / run['id'] if kind == 'evaluation' and run.get('id') else None
             env = self._device_environment(profile, run) if kind == 'evaluation' else profile.get('env', {})
+            recording = None
+            if kind == 'evaluation':
+                env = dict(env, VLARMORY_RECORD_VIDEO='1' if recording_enabled else '0', VLARMORY_VIDEO_DIR='')
+                if recording_enabled:
+                    directory = folder / 'videos' / f'trial_{run["cursor"] + 1:03d}_{time.time_ns()}'
+                    env['VLARMORY_VIDEO_DIR'] = str(directory.resolve())
+                    recording = dict(directory=str(directory.resolve()), fps=15, status='preparing')
             if self.stopping.is_set() or self.emergency_requested.is_set():
                 raise ValueError('已急停，不会启动评测')
             self._spawn(kind, command, profile['cwd'], env, payload['model'], checkpoint, folder)
+            if kind == 'evaluation':
+                self.jobs[kind]['recording'] = recording
+                trial = run['trials'][run['cursor']]
+                if recording or trial.get('recording'):
+                    trial.pop('recording', None)
+                    if recording:
+                        trial['recording'] = recording
+                        trial.setdefault('recording_attempts', []).append(recording)
+                    self.app.evaluation.write('runs', run)
             if kind == 'server' and uses_run_config:
                 self.jobs[kind].update(run_id=payload['run_id'], eval_config=str(config),
                                       deployment_profile=config_value['deployment_profile'], action_space=config_value['action_space'])
@@ -443,7 +469,8 @@ class ProcessControl:
             record = self.app.evaluation.transition(dict(run_id=record['id'], revision=record['revision'], action='start'))
             try:
                 self.start('evaluation', dict(model=record['model'], checkpoint=record['checkpoint'],
-                           eval_config=record['eval_config'], run_id=record['id'], revision=record['revision']))
+                           eval_config=record['eval_config'], run_id=record['id'], revision=record['revision'],
+                           **({'record_video': payload['record_video']} if 'record_video' in payload else {})))
             except Exception as exc:
                 record = self.app.evaluation.read('runs', record['id'])
                 if not self.active('evaluation'):

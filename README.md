@@ -302,3 +302,40 @@ POST `/api/replay/start` 携带 `recording_name` 与可选 `camera_id`，后台�
 Pass `--control-config /absolute/path/profiles.json` to enable server-owned argv profiles. The parent repository supplies model-specific commands; the console remains independent. HTTP requests select a configured model and existing checkpoint/YAML paths, never shell commands. Starts and stops use the existing local host/origin/token checks. Logs and the persistent software-stop latch live under the ignored output directory.
 
 The UI supports starting/stopping the owned policy server and starting a previously marked layout trial. Stop kills the owned evaluation process group and invokes the configured controller-stop command; a failed or timed-out controller check is shown as unconfirmed. This is a software stop, not a replacement for the physical emergency switch. Explicit unlock only clears the launch latch and does not move the arm. Record the result after stopping, then reopen the layout camera. No automatic retry or restart.
+
+### VLA 评测双视角录像（默认关闭）
+
+在“启动本条评测”上方勾选“评测时录制双视角视频（15 FPS）”，会把
+`record_video: true` 保存到当前轮次的评测 YAML；取消勾选保存为 `false`。
+设置从下次启动本条评测生效，运行中不能切换。也可直接编辑评测 YAML：
+
+```yaml
+record_video: true  # 缺省 false
+```
+
+控制台配置 `vla_record_video` 也可设置默认值（发布配置为 `false`），评测 YAML
+中的显式值优先。终端单独运行评测时，可用 `video_dir` 指定一个尚不存在的
+输出目录；缺省在 `videos/eval-<时间戳>/` 保存。
+
+录像复用评测机器人已有的 RGB 采集缓存，按 `camera_keys` 的顺序保存第三人称和
+腕部视角，不重复连接相机，不经过 HTTP/JPEG 预览或策略 observation 循环。
+后台线程读取不可变帧引用，分别送给两个低优先级、单线程 FFmpeg H.264 编码进程。
+内存不积压帧；编码跟不上时跳过源帧，并重复上一帧来保持两路共同的 15 FPS 时间轴。
+这不是硬件曝光同步；CPU、内存带宽及写盘仍有开销，真机性能需实测。
+
+每次启动使用独立目录，不覆盖重试视频：
+
+```text
+output/vla_evaluations/runs/<run_id>/videos/trial_<序号>_<时间戳>/
+  view_1.mp4
+  view_2.mp4
+  recording.json
+  view_1.ffmpeg.log
+  view_2.ffmpeg.log
+```
+
+页面显示当前录像状态及两路视频链接；评测记录保存录像目录和历次尝试。
+结束本条、退出或取消评测时，保留设备会话会释放录像资源并完成保存。
+MP4 使用分片封装，进程被强制终止时已完成的片段仍可恢复，但最后不足一个 GOP
+的画面可能丢失。录像依赖评测机 PATH 中含 libx264 的 `ffmpeg`；录像失败会记录
+错误并继续评测，编码日志保存在同一目录。
